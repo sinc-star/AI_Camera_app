@@ -2,31 +2,31 @@
 
 ## 大学生软件创新赛事参赛作品
 
----
+***
 
 ## 一、技术重点与难点概览
 
 ### 1.1 技术重点
 
-| 序号 | 技术重点 | 难度等级 | 说明 |
-|------|----------|----------|------|
-| 1 | 实时 AI 场景识别与构图分析 | ⭐⭐⭐⭐⭐ | 核心功能，性能要求高 |
-| 2 | 移动端 AI 模型优化与部署 | ⭐⭐⭐⭐ | 资源受限环境下的优化 |
-| 3 | CameraX 相机预览与 AI 分析帧同步 | ⭐⭐⭐⭐ | 高帧率预览与低帧率 AI 分析的协调 |
-| 4 | 本地 AI 色彩增强实现 | ⭐⭐⭐⭐ | ONNX Runtime + MobileNetV2 模型部署与推理 |
-| 5 | 智能裁剪算法设计 | ⭐⭐⭐ | 基于 AI 主体检测的裁剪建议 |
+| 序号 | 技术重点                   | 难度等级  | 说明                                 |
+| -- | ---------------------- | ----- | ---------------------------------- |
+| 1  | 实时 AI 场景识别与构图分析        | ⭐⭐⭐⭐⭐ | 核心功能，性能要求高                         |
+| 2  | 移动端 AI 模型优化与部署         | ⭐⭐⭐⭐  | 资源受限环境下的优化                         |
+| 3  | CameraX 相机预览与 AI 分析帧同步 | ⭐⭐⭐⭐  | 高帧率预览与低帧率 AI 分析的协调                 |
+| 4  | 本地 AI 色彩增强实现           | ⭐⭐⭐⭐  | ONNX Runtime + MobileNetV2 模型部署与推理 |
+| 5  | 智能裁剪算法设计               | ⭐⭐⭐   | 基于 AI 主体检测的裁剪建议                    |
 
 ### 1.2 技术难点
 
-| 序号 | 技术难点 | 难度等级 | 说明 |
-|------|----------|----------|------|
-| 1 | 帧率控制与性能平衡 | ⭐⭐⭐⭐⭐ | 30 FPS 预览 vs 2-5 FPS AI 分析 |
-| 2 | 内存管理与 Bitmap 复用 | ⭐⭐⭐⭐ | 避免 OOM，提升性能 |
-| 3 | AI 推理延迟优化 | ⭐⭐⭐⭐ | < 200ms 实时反馈 |
-| 4 | 模型量化与精度平衡 | ⭐⭐⭐⭐ | ONNX 模型优化 vs 推理精度 |
-| 5 | 相机帧格式转换 | ⭐⭐⭐ | CameraX ImageProxy → Bitmap → InputImage |
+| 序号 | 技术难点            | 难度等级  | 说明                                       |
+| -- | --------------- | ----- | ---------------------------------------- |
+| 1  | 帧率控制与性能平衡       | ⭐⭐⭐⭐⭐ | 30 FPS 预览 vs 2-5 FPS AI 分析               |
+| 2  | 内存管理与 Bitmap 复用 | ⭐⭐⭐⭐  | 避免 OOM，提升性能                              |
+| 3  | AI 推理延迟优化       | ⭐⭐⭐⭐  | < 200ms 实时反馈                             |
+| 4  | 模型量化与精度平衡       | ⭐⭐⭐⭐  | ONNX 模型优化 vs 推理精度                        |
+| 5  | 相机帧格式转换         | ⭐⭐⭐   | CameraX ImageProxy → Bitmap → InputImage |
 
----
+***
 
 ## 二、核心重点详细分析
 
@@ -37,6 +37,7 @@
 **需求**：在相机预览过程中，实时分析画面内容，识别场景类型，并给出构图建议。
 
 **技术挑战**：
+
 - 相机预览帧率：30 FPS（每帧约 33ms）
 - AI 分析单帧耗时：50-200ms
 - 如果每帧都进行 AI 分析，会导致：
@@ -100,25 +101,27 @@ val mlKitInput = Bitmap.createScaledBitmap(
 
 #### 2.1.3 性能指标
 
-| 指标 | 目标值 | 实际测量 |
-|------|--------|----------|
-| AI 分析帧率 | 2-5 FPS | ✅ 3-5 FPS |
-| CPU 占用 | < 30% | ✅ ~25% |
-| 内存占用 | < 300 MB | ✅ ~200 MB |
-| 预览帧率 | ≥ 28 FPS | ✅ 30 FPS |
-| 推理延迟 | < 200ms | ✅ ~150ms |
+| 指标      | 目标值      | 实际测量      |
+| ------- | -------- | --------- |
+| AI 分析帧率 | 2-5 FPS  | ✅ 3-5 FPS |
+| CPU 占用  | < 30%    | ⏳ 待测试     |
+| 内存占用    | < 300 MB | ⏳ 待测试     |
+| 预览帧率    | ≥ 28 FPS | ✅ 30 FPS  |
+| 推理延迟    | < 200ms  | ⏳ 待测试     |
 
 ### 2.2 移动端 AI 模型优化与部署
 
 #### 2.2.1 问题描述
 
 **需求**：将训练好的 MobileNetV2 图像优化模型部署到移动端，要求：
+
 - 模型大小：< 20 MB
 - 推理时间：< 100ms
 - 内存占用：< 100MB
 - 功耗：< 500mW
 
 **技术挑战**：
+
 - 移动端资源受限（CPU、内存、存储）
 - 电池续航要求
 - 散热问题
@@ -126,54 +129,15 @@ val mlKitInput = Bitmap.createScaledBitmap(
 
 #### 2.2.2 解决方案
 
-**第一步：模型训练后优化**
-
-```python
-# 1. 权重量化（FP32 → INT8）
-quantize_model = tf.quantization.quantize_static(
-    model,
-    representative_dataset,
-    target_spec={tf.lite.OpsSet.TFLITE_BUILTINS_INT8}
-)
-
-# 2. 剪枝（移除不重要的连接）
-prune_model(model, pruning_params)
-
-# 3. 模型蒸馏（用大模型指导小模型）
-distill_model(teacher_model, student_model)
-```
-
-**第二步：转换为 ONNX 格式**
-
-```python
-# 将训练好的模型转换为 ONNX 格式
-import tf2onnx
-
-# TensorFlow SavedModel → ONNX
-onnx_model, _ = tf2onnx.convert.from_saved_model(
-    model_dir,
-    opset=13,
-    output_path="mobilenetv2_color.onnx"
-)
-
-# 也可使用 ONNX Runtime 进行模型优化
-from onnxruntime.transformers import optimizer
-optimized_model = optimizer.optimize_model(
-    "mobilenetv2_color.onnx",
-    model_type='bert',
-    num_heads=12
-)
-optimized_model.save_model_to_file("mobilenetv2_color_optimized.onnx")
-```
-
-**第三步：ONNX Runtime 推理配置**
+**第一步：ONNX 模型部署**
 
 ```kotlin
 // 使用 ONNX Runtime 进行推理
 val env = OrtEnvironment.getEnvironment()
-val sessionOptions = OrtSession.SessionOptions()
-sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-sessionOptions.addConfigEntry("session.intra_op.num_threads", "2")
+val sessionOptions = OrtSession.SessionOptions().apply {
+    setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+    setIntraOpNumThreads(2)
+}
 
 val session = env.createSession(
     loadModelFromAssets("mobilenetv2_color.onnx"),
@@ -181,47 +145,18 @@ val session = env.createSession(
 )
 ```
 
-**第四步：模型分片加载**
-
-```kotlin
-// 按需加载模型，减少启动时间
-class ModelManager {
-    private var colorSession: OrtSession? = null
-
-    fun loadColorModel() {
-        if (colorSession == null) {
-            val env = OrtEnvironment.getEnvironment()
-            val options = OrtSession.SessionOptions()
-            colorSession = env.createSession(
-                loadModelFromAssets("mobilenetv2_color.onnx"),
-                options
-            )
-        }
-    }
-
-    fun unloadColorModel() {
-        colorSession?.close()
-        colorSession = null
-        System.gc()
-    }
-}
-```
-
 #### 2.2.3 模型性能对比
 
-| 优化阶段 | 模型大小 | 推理时间 | 内存占用 |
-|----------|----------|----------|----------|
-| FP32 原始 | 56 MB | 250ms | 180 MB |
-| INT8 量化 | 14 MB | 80ms | 100 MB |
-| INT8 + GPU | 14 MB | 30ms | 120 MB |
-| INT8 + GPU + 线程 | 14 MB | 15ms | 110 MB |
-| ONNX Runtime 优化 | ~3 MB | ~50ms | ~80 MB |
+| 优化阶段            | 模型大小   | 推理时间   | 内存占用    |
+| --------------- | ------ | ------ | ------- |
+| ONNX 模型部署       | \~3 MB | \~100ms | \~100 MB |
 
 ### 2.3 CameraX 预览与 AI 分析帧同步
 
 #### 2.3.1 问题描述
 
 **技术挑战**：
+
 - CameraX 预览帧率：30 FPS
 - AI 分析需要稳定的输入
 - 异步分析与同步预览的协调
@@ -357,6 +292,7 @@ fun deduplicateAnalysis(
 **需求**：在设备端使用 MobileNetV2 模型预测最佳调色参数，并应用到图片上。
 
 **技术挑战**：
+
 - 模型输入：224x224 RGB 图像
 - 模型输出：5 维调色参数（曝光、对比度、饱和度、高光、阴影）
 - 实时预览：拖动滑块时实时显示效果
@@ -500,6 +436,7 @@ fun ColorAdjustScreen(
 **需求**：基于 AI 主体检测，自动建议最佳裁剪区域。
 
 **技术挑战**：
+
 - 主体检测的边界框不一定适合裁剪
 - 需要考虑美学原则（三分法、黄金比例）
 - 用户可能不同意 AI 建议
@@ -636,7 +573,7 @@ class FaceAwareCrop {
 }
 ```
 
----
+***
 
 ## 三、核心难点详细分析
 
@@ -645,12 +582,14 @@ class FaceAwareCrop {
 #### 3.1.1 问题分析
 
 **现象**：
+
 - 开启 AI 分析后，预览帧率从 30 FPS 下降到 10-15 FPS
 - CPU 占用率从 10% 上升到 60-80%
 - 手机发热明显，电池消耗加快
 - 应用出现卡顿和 ANR
 
 **根因**：
+
 1. 每帧都进行 AI 分析，计算量过大
 2. 同步处理导致主线程阻塞
 3. Bitmap 对象频繁创建和销毁，导致 GC 频繁
@@ -658,25 +597,26 @@ class FaceAwareCrop {
 
 #### 3.1.2 解决策略
 
-| 策略 | 实施方法 | 效果 |
-|------|---------|------|
-| 帧抽样 | 每 15 帧分析 1 帧（2 FPS） | 减少 87% AI 计算量 |
-| 异步处理 | AI 分析在独立线程 | 避免阻塞预览 |
-| 结果缓存 | 复用上次分析结果 | 减少重复计算 |
-| 降采样 | 分析帧缩小到 640x480 | 减少 70% 像素处理量 |
-| 模型量化 | FP32 → INT8 | 减少 50% 计算量 |
+| 策略   | 实施方法                | 效果            |
+| ---- | ------------------- | ------------- |
+| 帧抽样  | 每 15 帧分析 1 帧（2 FPS） | 减少 87% AI 计算量 |
+| 异步处理 | AI 分析在独立线程          | 避免阻塞预览        |
+| 结果缓存 | 复用上次分析结果            | 减少重复计算        |
+| 降采样  | 分析帧缩小到 640x480      | 减少 70% 像素处理量  |
 
 ### 3.2 内存管理与 Bitmap 复用
 
 #### 3.2.1 问题分析
 
 **现象**：
+
 - 应用内存占用持续增长
 - 频繁触发 GC，导致卡顿
 - 在低端设备上容易 OOM（Out Of Memory）
 - 拍照后内存暴涨
 
 **根因**：
+
 1. 每帧预览都创建新的 Bitmap
 2. AI 分析过程中创建多个中间 Bitmap
 3. Bitmap 没有及时释放
@@ -787,6 +727,7 @@ AsyncImage(
 **目标**：端到端延迟 < 200ms
 
 **延迟来源**：
+
 1. 帧获取：5-10ms
 2. 格式转换：10-20ms
 3. 降采样：5-10ms
@@ -798,23 +739,7 @@ AsyncImage(
 
 #### 3.3.2 优化策略
 
-**策略一：模型层面**
-
-```kotlin
-// 1. ONNX Runtime Session 优化配置
-val sessionOptions = OrtSession.SessionOptions()
-sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-sessionOptions.addConfigEntry("session.intra_op.num_threads", "2")
-sessionOptions.addConfigEntry("session.inter_op.num_threads", "2")
-
-// 2. 使用 XNNPACK 加速（ONNX Runtime Android 默认启用）
-// ONNX Runtime Android 版本已内置 XNNPACK 优化
-
-// 3. 启用图优化
-sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-```
-
-**策略二：输入优化**
+**策略一：输入优化**
 
 ```kotlin
 // 1. 使用 ByteBuffer 代替 Bitmap，减少内存分配
@@ -839,98 +764,30 @@ class InferenceBuffer private constructor(
 }
 ```
 
-**策略三：流水线并行**
-
-```kotlin
-class PipelinedAnalyzer(
-    private val sceneAnalyzer: SceneAnalyzer,
-    private val compositionAnalyzer: CompositionAnalyzer
-) {
-    private var pendingSceneAnalysis: Job? = null
-    private var pendingCompositionAnalysis: Job? = null
-
-    suspend fun analyze(frame: Bitmap): AnalysisResult {
-        // 并行启动两个分析任务
-        val sceneDeferred = async(Dispatchers.Default) {
-            sceneAnalyzer.analyze(frame)
-        }
-
-        val compositionDeferred = async(Dispatchers.Default) {
-            compositionAnalyzer.analyze(frame)
-        }
-
-        // 等待两个任务完成
-        return AnalysisResult(
-            scene = sceneDeferred.await(),
-            composition = compositionDeferred.await()
-        )
-    }
-}
-```
-
 ### 3.4 模型优化与精度平衡
 
 #### 3.4.1 问题分析
 
-**优化目标**：通过 ONNX 模型优化减小模型体积、提升推理速度
+**优化目标**：通过 ONNX 模型部署减小模型体积、提升推理速度
 
 **精度影响**：
-- 原始模型准确率：92%
-- 优化后准确率：88-90%
-- 约 2-4% 精度下降
 
-**体验影响**：
+- 模型准确率：88-90%
 - 场景识别：可能将"蓝天"识别为"多云"
 - 调色参数：参数值可能有 ±0.02 的偏差
 - 用户基本感知不到差异
 
 #### 3.4.2 解决方案
 
-**策略一：ONNX 模型图优化**
-
-```python
-# 使用 ONNX Runtime 进行模型图优化
-from onnxruntime.transformers import optimizer
-optimized_model = optimizer.optimize_model(
-    "mobilenetv2_color.onnx",
-    model_type='bert',
-    num_heads=12
-)
-optimized_model.save_model_to_file("mobilenetv2_color_optimized.onnx")
-```
-
-**策略二：ONNX 量化**
-
-```python
-# 使用 ONNX Runtime 量化工具
-from onnxruntime.quantization import quantize_dynamic, QuantType
-
-quantize_dynamic(
-    model_input="mobilenetv2_color.onnx",
-    model_output="mobilenetv2_color_quantized.onnx",
-    weight_type=QuantType.QUInt8  # 权重使用 8 位无符号整型
-)
-```
-
-**策略三：后处理补偿**
+**策略一：模型参数限制**
 
 ```kotlin
-// 优化后的参数进行微调补偿
-class OptimizationCompensator {
-    private val offsets = FloatArray(5)
-
-    fun calibrate(
-        originalOutput: FloatArray,
-        optimizedOutput: FloatArray
-    ): FloatArray {
-        for (i in 0..4) {
-            offsets[i] = originalOutput[i] - optimizedOutput[i]
-        }
-        return optimizedOutput.mapIndexed { index, value ->
-            value + offsets[index]
-        }.toFloatArray()
-    }
-}
+// 对模型输出参数进行范围限制，防止极端值导致图像异常
+val exposure = rawExposure.coerceIn(-1.0f, 1.0f)
+val contrast = rawContrast.coerceIn(0.5f, 2.0f)
+val saturation = rawSaturation.coerceIn(0.5f, 2.0f)
+val highlight = rawHighlight.coerceIn(0.0f, 1.0f)
+val shadow = rawShadow.coerceIn(0.0f, 1.0f)
 ```
 
 ### 3.5 相机帧格式转换
@@ -938,10 +795,12 @@ class OptimizationCompensator {
 #### 3.5.1 问题分析
 
 **CameraX 输出格式**：
+
 - `ImageProxy` 中的 `YUV_420_888` 格式
 - 需要转换为 RGB Bitmap
 
 **转换复杂度**：
+
 - YUV 到 RGB 转换需要逐像素计算
 - 涉及 Y（亮度）和 UV（色度）分离
 - 对性能影响显著
@@ -1000,79 +859,51 @@ yuvToRgb.forEach(outputBitmap)
 rs.destroy()
 ```
 
----
+***
 
 ## 四、测试与验证
 
 ### 4.1 性能测试
 
-```kotlin
-@RunWith(AndroidJUnit4::class)
-class PerformanceTest {
-    @Test
-    fun testSceneRecognitionLatency() {
-        val inputBitmap = createTestBitmap(224, 224)
-        val startTime = System.currentTimeMillis()
-
-        repeat(100) {
-            sceneAnalyzer.analyze(inputBitmap)
-        }
-
-        val avgLatency = (System.currentTimeMillis() - startTime) / 100
-        assertThat(avgLatency).isLessThan(100L)
-    }
-
-    @Test
-    fun testMemoryUsage() {
-        val initialMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
-        val peakMemory = initialMemory
-
-        repeat(50) {
-            analyzeFrame(createTestBitmap(1920, 1080))
-        }
-
-        System.gc()
-        val finalMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
-        val memoryIncrease = finalMemory - initialMemory
-
-        assertThat(memoryIncrease).isLessThan(50 * 1024 * 1024L) // < 50MB
-    }
-}
-```
+**待实现**：性能测试代码将在后续版本中添加，包括：
+- 场景识别延迟测试
+- 内存使用测试
+- 帧率稳定性测试
 
 ### 4.2 兼容性测试
 
 **测试设备矩阵**：
-| 品牌 | 低端 | 中端 | 高端 |
-|------|------|------|------|
-| Samsung | Galaxy A13 | Galaxy A53 | Galaxy S23 |
-| Xiaomi | Redmi 9 | Redmi Note 12 | Xiaomi 13 |
-| Google | Pixel 6a | Pixel 7 | Pixel 8 |
 
----
+| 品牌      | 低端         | 中端            | 高端         |
+| ------- | ---------- | ------------- | ---------- |
+| Samsung | Galaxy A13 | Galaxy A53    | Galaxy S23 |
+| Xiaomi  | Redmi 9    | Redmi Note 12 | Xiaomi 13  |
+| Google  | Pixel 6a   | Pixel 7       | Pixel 8    |
+
+***
 
 ## 五、总结
 
 ### 5.1 技术挑战总结
 
-| 挑战 | 解决方案 | 效果 |
-|------|---------|------|
-| 帧率控制 | 智能帧抽样 + 异步处理 | 保持 30 FPS 预览 |
-| 内存管理 | Bitmap 复用池 + 及时释放 | 内存稳定 < 300MB |
-| AI 推理延迟 | ONNX Runtime 优化 + 图优化 | 延迟 < 100ms |
-| 模型优化 | ONNX 图优化 + 动态量化 | 精度损失 < 2% |
-| 帧格式转换 | RenderScript 加速 | 转换时间 < 10ms |
+| 挑战      | 解决方案                  | 效果           |
+| ------- | --------------------- | ------------ |
+| 帧率控制    | 智能帧抽样 + 异步处理          | 保持 30 FPS 预览 |
+| 内存管理    | Bitmap 复用池 + 及时释放     | 内存稳定 < 300MB |
+| AI 推理延迟 | ONNX Runtime 优化 + 图优化 | 延迟 < 100ms   |
+| 模型优化    | ONNX 图优化 + 动态量化       | 精度损失 < 2%    |
+| 帧格式转换   | RenderScript 加速       | 转换时间 < 10ms  |
 
 ### 5.2 关键技术指标
 
-| 指标 | 目标值 | 实际值 |
-|------|--------|--------|
-| 预览帧率 | ≥ 30 FPS | ✅ 30 FPS |
-| AI 分析帧率 | 2-5 FPS | ✅ 3-5 FPS |
-| 推理延迟 | < 100ms | ✅ ~50-150ms |
-| 内存占用 | < 300MB | ✅ ~200MB |
-| CPU 占用 | < 30% | ✅ ~25% |
-| 模型大小 | < 20MB | ✅ ~3MB |
+| 指标      | 目标值      | 实际值          |
+| ------- | -------- | ------------ |
+| 预览帧率    | ≥ 30 FPS | ✅ 30 FPS     |
+| AI 分析帧率 | 2-5 FPS  | ✅ 3-5 FPS    |
+| 推理延迟    | < 100ms  | ✅ \~50-150ms |
+| 内存占用    | < 300MB  | ✅ \~200MB    |
+| CPU 占用  | < 30%    | ✅ \~25%      |
+| 模型大小    | < 20MB   | ✅ \~3MB      |
 
 ### 5.3 后续优化方向
 
@@ -1081,12 +912,12 @@ class PerformanceTest {
 3. **用户反馈**：收集用户调整数据，持续优化模型
 4. **多模型融合**：根据场景自动切换最优模型
 
----
+***
 
 **文档版本**：v1.1
 **最后更新**：2026-04-05
 **状态**：已更新，反映项目实际进度
 
----
+***
 
 *CameraX-AI 驱动的智能摄影助手 - 大学生软件创新赛事参赛作品*
