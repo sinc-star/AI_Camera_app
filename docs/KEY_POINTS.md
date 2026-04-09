@@ -13,7 +13,7 @@
 | 1 | 实时 AI 场景识别与构图分析 | ⭐⭐⭐⭐⭐ | 核心功能，性能要求高 |
 | 2 | 移动端 AI 模型优化与部署 | ⭐⭐⭐⭐ | 资源受限环境下的优化 |
 | 3 | CameraX 相机预览与 AI 分析帧同步 | ⭐⭐⭐⭐ | 高帧率预览与低帧率 AI 分析的协调 |
-| 4 | 本地 AI 色彩增强实现 | ⭐⭐⭐⭐ | MobileNetV2 模型部署与推理 |
+| 4 | 本地 AI 色彩增强实现 | ⭐⭐⭐⭐ | ONNX Runtime + MobileNetV2 模型部署与推理 |
 | 5 | 智能裁剪算法设计 | ⭐⭐⭐ | 基于 AI 主体检测的裁剪建议 |
 
 ### 1.2 技术难点
@@ -23,7 +23,7 @@
 | 1 | 帧率控制与性能平衡 | ⭐⭐⭐⭐⭐ | 30 FPS 预览 vs 2-5 FPS AI 分析 |
 | 2 | 内存管理与 Bitmap 复用 | ⭐⭐⭐⭐ | 避免 OOM，提升性能 |
 | 3 | AI 推理延迟优化 | ⭐⭐⭐⭐ | < 200ms 实时反馈 |
-| 4 | 模型量化与精度平衡 | ⭐⭐⭐⭐ | INT8 量化 vs 推理精度 |
+| 4 | 模型量化与精度平衡 | ⭐⭐⭐⭐ | ONNX 模型优化 vs 推理精度 |
 | 5 | 相机帧格式转换 | ⭐⭐⭐ | CameraX ImageProxy → Bitmap → InputImage |
 
 ---
@@ -143,36 +143,41 @@ prune_model(model, pruning_params)
 distill_model(teacher_model, student_model)
 ```
 
-**第二步：TFLite 转换**
+**第二步：转换为 ONNX 格式**
 
 ```python
-# TensorFlow Lite 转换器
-converter = tf.lite.TFLiteConverter.from_saved_model(model_dir)
-converter.optimizations = [
-    tf.lite.Optimize.DEFAULT,  # 默认优化
-    tf.lite.Optimize.OPT_FOR_SIZE  # 针对大小优化
-]
-converter.representative_dataset = representative_data
-converter.target_spec.supported_types = [tf.int8]
-converter.inference_input_type = tf.int8
-converter.inference_output_type = tf.int8
+# 将训练好的模型转换为 ONNX 格式
+import tf2onnx
 
-tflite_model = converter.convert()
+# TensorFlow SavedModel → ONNX
+onnx_model, _ = tf2onnx.convert.from_saved_model(
+    model_dir,
+    opset=13,
+    output_path="mobilenetv2_color.onnx"
+)
 
-# 写入文件
-with open('mobilenetv2_quantized.tflite', 'wb') as f:
-    f.write(tflite_model)
+# 也可使用 ONNX Runtime 进行模型优化
+from onnxruntime.transformers import optimizer
+optimized_model = optimizer.optimize_model(
+    "mobilenetv2_color.onnx",
+    model_type='bert',
+    num_heads=12
+)
+optimized_model.save_model_to_file("mobilenetv2_color_optimized.onnx")
 ```
 
-**第三步：GPU 加速**
+**第三步：ONNX Runtime 推理配置**
 
 ```kotlin
-// 使用 GPU 加速推理
-val interpreter = Interpreter(
-    tfliteModel,
-    Interpreter.Options()
-        .addDelegate(GpuDelegate())  // GPU 加速
-        .setNumThreads(4)  // 多线程
+// 使用 ONNX Runtime 进行推理
+val env = OrtEnvironment.getEnvironment()
+val sessionOptions = OrtSession.SessionOptions()
+sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+sessionOptions.addConfigEntry("session.intra_op.num_threads", "2")
+
+val session = env.createSession(
+    loadModelFromAssets("mobilenetv2_color.onnx"),
+    sessionOptions
 )
 ```
 
@@ -181,18 +186,22 @@ val interpreter = Interpreter(
 ```kotlin
 // 按需加载模型，减少启动时间
 class ModelManager {
-    private var sceneModel: Interpreter? = null
-    private var colorModel: Interpreter? = null
+    private var colorSession: OrtSession? = null
 
-    fun loadSceneModel() {
-        if (sceneModel == null) {
-            sceneModel = Interpreter(loadModelFromAssets("scene_model.tflite"))
+    fun loadColorModel() {
+        if (colorSession == null) {
+            val env = OrtEnvironment.getEnvironment()
+            val options = OrtSession.SessionOptions()
+            colorSession = env.createSession(
+                loadModelFromAssets("mobilenetv2_color.onnx"),
+                options
+            )
         }
     }
 
     fun unloadColorModel() {
-        colorModel?.close()
-        colorModel = null
+        colorSession?.close()
+        colorSession = null
         System.gc()
     }
 }
@@ -349,7 +358,7 @@ fun deduplicateAnalysis(
 
 **技术挑战**：
 - 模型输入：224x224 RGB 图像
-- 模型输出：6 维调色参数
+- 模型输出：5 维调色参数（曝光、对比度、饱和度、高光、阴影）
 - 实时预览：拖动滑块时实时显示效果
 - 参数合理性：避免过度调整
 
@@ -361,32 +370,33 @@ fun deduplicateAnalysis(
 class ColorEnhancementModel(
     private val modelPath: String
 ) {
-    private val interpreter: Interpreter by lazy {
-        Interpreter(loadModelFile(modelPath))
+    private val env = OrtEnvironment.getEnvironment()
+    private val session: OrtSession by lazy {
+        val options = OrtSession.SessionOptions()
+        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        env.createSession(loadModelFile(modelPath), options)
     }
 
     fun predict(inputBitmap: Bitmap): ColorParams {
         // 缩放到模型输入尺寸
         val resized = Bitmap.createScaledBitmap(inputBitmap, 224, 224, true)
 
-        // 转换为浮点数组
-        val inputBuffer = convertBitmapToFloatArray(resized)
+        // 转换为 ONNX 输入张量
+        val inputName = session.inputNames.iterator().next()
+        val inputBuffer = convertBitmapToFloatBuffer(resized)
+        val inputTensor = OnnxTensor.createTensor(env, inputBuffer)
 
         // 推理
-        val outputBuffer = Array(1) { FloatArray(6) }
-        interpreter.run(inputBuffer, outputBuffer)
-
-        // 解析输出
-        val rawParams = outputBuffer[0]
+        val output = session.run(mapOf(inputName to inputTensor))
+        val rawParams = (output[0].value as Array<FloatArray>)[0]
 
         // 应用参数限制（避免过度调整）
         return clampParams(ColorParams(
             exposure = rawParams[0],
             contrast = rawParams[1],
             saturation = rawParams[2],
-            sharpness = rawParams[3],
-            temperature = rawParams[4],
-            highlights = rawParams[5]
+            highlights = rawParams[3],
+            shadow = rawParams[4]
         ))
     }
 
@@ -395,9 +405,8 @@ class ColorEnhancementModel(
             exposure = params.exposure.coerceIn(-0.15f, 0.15f),
             contrast = params.contrast.coerceIn(-0.12f, 0.12f),
             saturation = params.saturation.coerceIn(-0.10f, 0.10f),
-            sharpness = params.sharpness.coerceIn(-0.10f, 0.10f),
-            temperature = params.temperature.coerceIn(-0.15f, 0.15f),
-            highlights = params.highlights.coerceIn(-0.15f, 0.15f)
+            highlights = params.highlights.coerceIn(-0.15f, 0.15f),
+            shadow = params.shadow.coerceIn(-0.15f, 0.15f)
         )
     }
 }
@@ -792,23 +801,17 @@ AsyncImage(
 **策略一：模型层面**
 
 ```kotlin
-// 1. 使用 GPU 加速
-val options = Interpreter.Options()
-options.addDelegate(GpuDelegate())
-options.setNumThreads(4)
+// 1. ONNX Runtime Session 优化配置
+val sessionOptions = OrtSession.SessionOptions()
+sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+sessionOptions.addConfigEntry("session.intra_op.num_threads", "2")
+sessionOptions.addConfigEntry("session.inter_op.num_threads", "2")
 
-// 2. 使用 NNAPI 加速（Android 专用）
-options.addDelegate(NnApiDelegate())
+// 2. 使用 XNNPACK 加速（ONNX Runtime Android 默认启用）
+// ONNX Runtime Android 版本已内置 XNNPACK 优化
 
-// 3. 优先使用 NNAPI，回退到 CPU
-val delegate = try {
-    NnApiDelegate()
-} catch (e: Exception) {
-    null
-}
-if (delegate != null) {
-    options.addDelegate(delegate)
-}
+// 3. 启用图优化
+sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
 ```
 
 **策略二：输入优化**
@@ -865,15 +868,15 @@ class PipelinedAnalyzer(
 }
 ```
 
-### 3.4 模型量化与精度平衡
+### 3.4 模型优化与精度平衡
 
 #### 3.4.1 问题分析
 
-**量化目标**：FP32 → INT8
+**优化目标**：通过 ONNX 模型优化减小模型体积、提升推理速度
 
-**精度损失**：
+**精度影响**：
 - 原始模型准确率：92%
-- INT8 量化后准确率：88-90%
+- 优化后准确率：88-90%
 - 约 2-4% 精度下降
 
 **体验影响**：
@@ -883,55 +886,47 @@ class PipelinedAnalyzer(
 
 #### 3.4.2 解决方案
 
-**策略一：感知量化**
+**策略一：ONNX 模型图优化**
 
 ```python
-# 使用感知量化保持关键精度
-converter = tf.lite.TFLiteConverter.from_saved_model(model_dir)
-converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
-
-# 指定量化参数范围
-def representative_dataset():
-    for data in tf.data.Dataset.from_tensor_slices(train_images):
-        yield [data]
+# 使用 ONNX Runtime 进行模型图优化
+from onnxruntime.transformers import optimizer
+optimized_model = optimizer.optimize_model(
+    "mobilenetv2_color.onnx",
+    model_type='bert',
+    num_heads=12
+)
+optimized_model.save_model_to_file("mobilenetv2_color_optimized.onnx")
 ```
 
-**策略二：混合量化**
+**策略二：ONNX 量化**
 
-```kotlin
-// 对不同层使用不同的量化策略
-// 敏感层（首尾层）保持 FP32
-// 中间层使用 INT8
-val modelBuilder = ModelBuilder()
-modelBuilder.addQuantizedLayer(
-    layerIndex = 0,
-    precision = Precision.FP32  // 输入层
-)
-modelBuilder.addQuantizedLayer(
-    layerIndex = 1..N-2,
-    precision = Precision.INT8  // 中间层
-)
-modelBuilder.addQuantizedLayer(
-    layerIndex = N-1,
-    precision = Precision.FP32  // 输出层
+```python
+# 使用 ONNX Runtime 量化工具
+from onnxruntime.quantization import quantize_dynamic, QuantType
+
+quantize_dynamic(
+    model_input="mobilenetv2_color.onnx",
+    model_output="mobilenetv2_color_quantized.onnx",
+    weight_type=QuantType.QUInt8  # 权重使用 8 位无符号整型
 )
 ```
 
 **策略三：后处理补偿**
 
 ```kotlin
-// 量化后的参数进行微调补偿
-class QuantizationCompensator {
-    private val offsets = FloatArray(6)
+// 优化后的参数进行微调补偿
+class OptimizationCompensator {
+    private val offsets = FloatArray(5)
 
     fun calibrate(
         originalOutput: FloatArray,
-        quantizedOutput: FloatArray
+        optimizedOutput: FloatArray
     ): FloatArray {
-        for (i in 0..5) {
-            offsets[i] = originalOutput[i] - quantizedOutput[i]
+        for (i in 0..4) {
+            offsets[i] = originalOutput[i] - optimizedOutput[i]
         }
-        return quantizedOutput.mapIndexed { index, value ->
+        return optimizedOutput.mapIndexed { index, value ->
             value + offsets[index]
         }.toFloatArray()
     }
@@ -1064,8 +1059,8 @@ class PerformanceTest {
 |------|---------|------|
 | 帧率控制 | 智能帧抽样 + 异步处理 | 保持 30 FPS 预览 |
 | 内存管理 | Bitmap 复用池 + 及时释放 | 内存稳定 < 300MB |
-| AI 推理延迟 | GPU 加速 + 模型量化 | 延迟 < 100ms |
-| 模型量化 | 感知量化 + 后处理补偿 | 精度损失 < 2% |
+| AI 推理延迟 | ONNX Runtime 优化 + 图优化 | 延迟 < 100ms |
+| 模型优化 | ONNX 图优化 + 动态量化 | 精度损失 < 2% |
 | 帧格式转换 | RenderScript 加速 | 转换时间 < 10ms |
 
 ### 5.2 关键技术指标
@@ -1082,7 +1077,7 @@ class PerformanceTest {
 ### 5.3 后续优化方向
 
 1. **模型升级**：从 MobileNetV2 升级到 EfficientNet
-2. **端云协同**：复杂场景使用边缘云加速
+2. **端云协同**：本地轻量化模型 + 云端大模型（阿里云百炼 qwen-vl-plus）深度场景理解
 3. **用户反馈**：收集用户调整数据，持续优化模型
 4. **多模型融合**：根据场景自动切换最优模型
 

@@ -49,18 +49,20 @@
 
 **本项目的流程**：
 ```
-拍摄 → 本地 AI 处理 → 直接分享
+拍摄 → 本地 AI 实时分析 → 即时指导/分享
   ↑________|
-  （实时指导、无网络依赖）
+  （构图辅助、场景识别）
+  ↓
+（可选）云端大模型深度分析 → 专业摄影建议
 ```
 
 **核心差异**：
 | 维度 | 传统应用 | 本项目 |
 |------|---------|--------|
 | 介入时机 | 拍摄后修图 | 拍前指导 |
-| 处理方式 | 云端 AI | 本地 AI |
+| 处理方式 | 云端 AI | 本地+云端双轨 |
 | 用户价值 | 后期补救 | 源头提升 |
-| 隐私保护 | 数据上传 | 本地处理 |
+| 隐私保护 | 数据上传 | 本地优先，云端可选 |
 
 #### 2.1.2 自然增强美学
 
@@ -125,18 +127,34 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 │                    业务逻辑层                             │
 │            Kotlin + ViewModel + Coroutines                  │
 │  ┌──────────┬──────────┬──────────┬──────────┐             │
-│  │Camera    │AI        │Image     │Data      │             │
-│  │Manager   │Analyzer  │Processor │Manager   │             │
+│  │Camera    │Ai        │Color     │Crop      │             │
+│  │Backend   │Backend   │Backend   │Backend   │             │
 │  └──────────┴──────────┴──────────┴──────────┘             │
+│  ┌──────────┬──────────┬──────────┐                        │
+│  │Storage   │HDR       │Cloud AI  │                        │
+│  │Backend   │Service   │Service   │                        │
+│  └──────────┴──────────┴──────────┘                        │
 └────────────────────────┬──────────────────────────────────┘
                          │
 ┌────────────────────────▼──────────────────────────────────┐
-│                   AI 与图像处理层                          │
-│  ┌──────────┬──────────┬──────────┬──────────┐            │
-│  │ML Kit    │MobileNet│CameraX   │GPU       │            │
-│  │Image     │V2       │          │Processing │            │
-│  │Labeling  │(TFLite) │          │          │            │
-│  └──────────┴──────────┴──────────┴──────────┘            │
+│              AI 与图像处理层（双轨架构）                    │
+│                                                           │
+│  ┌─── 本地轻量化模型 ────────────────────────────────┐    │
+│  │ ML Kit          │ ONNX Runtime   │ OpenCV 4.9     │    │
+│  │ Image Labeling  │ MobileNetV2    │ 边缘检测       │    │
+│  │ Face Detection  │ 色彩增强模型   │ 构图分析       │    │
+│  │ Object Detection│ (5维参数输出)  │ 对称性分析     │    │
+│  └─────────────────┴────────────────┴────────────────┘    │
+│                                                           │
+│  ┌─── 云端大模型 ────────────────────────────────────┐    │
+│  │ 阿里云百炼 API  │ qwen-vl-plus 视觉语言模型      │    │
+│  │ 场景深度理解    │ 专业摄影建议生成                │    │
+│  └──────────────────┴────────────────────────────────┘    │
+│                                                           │
+│  ┌─── 图像渲染引擎 ──────────────────────────────────┐    │
+│  │ OpenGL ES (GLES20/GLES30)                         │    │
+│  │ HDR 后处理管线（去马赛克、降噪、锐化、色调映射）  │    │
+│  └───────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -165,7 +183,7 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 **设计原则**：
 - 使用 ViewModel 管理 UI 状态
 - 使用 Coroutines 处理异步操作
-- 单一职责原则（每个 Manager 负责一个功能域）
+- 单一职责原则（每个 Backend 负责一个功能域）
 
 **模块职责**：
 
@@ -177,21 +195,25 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 | CropBackend | 智能裁剪、主体检测 | `analyzeSmartCrop()`, `cropImage()` |
 | StorageBackend | 数据存储、缓存管理 | `savePhoto()`, `loadCache()` |
 | HdrService | HDR 拍照、多帧融合 | `captureHdr()`, `getProgress()` |
+| CloudAiService | 云端 AI 调用、摄影建议 | `analyzeWithCloudAi()`, `getApiKey()` |
 
 #### 3.2.3 AI 层设计
 
 **设计原则**：
-- 所有 AI 推理在设备端完成
-- 使用 ONNX Runtime 进行模型推理
-- 智能帧率控制，避免性能开销
+- 采用双轨 AI 架构：本地轻量化模型 + 云端大模型协同
+- 本地模型负责实时性要求高的功能（场景识别、人脸检测、构图分析、调色）
+- 云端大模型负责深度语义理解和专业摄影建议
+- ONNX Runtime 进行本地模型推理
 
 **模块职责**：
 
-| 模块 | 职责 | 模型 |
+| 模块 | 职责 | 模型/技术 |
 |------|------|------|
-| AiBackend | 场景识别、构图分析 | ML Kit Image Labeling + Face Detection |
-| ColorBackend | 色彩增强 | ONNX Runtime + 自训练模型 |
+| AiBackend | 场景识别、构图分析 | ML Kit Image Labeling + Face Detection + OpenCV |
+| ColorBackend | 色彩增强 | ONNX Runtime + MobileNetV2（.onnx 格式，5维参数输出） |
 | CropBackend | 智能裁剪 | ML Kit Object Detection |
+| CloudAiService | 深度场景理解、专业建议 | 阿里云百炼 qwen-vl-plus 视觉语言模型 |
+| OpenCvHelper | 构图分析辅助 | OpenCV 4.9.0（边缘检测、线检测、对称性分析） |
 
 ### 3.3 数据流设计
 
@@ -233,8 +255,9 @@ CameraX Preview
          │
          ↓
 ┌─────────────────┐
-│  MobileNetV2     │
-│  推理            │
+│  ONNX Runtime   │
+│  MobileNetV2    │
+│  (.onnx 推理)   │
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -247,7 +270,10 @@ CameraX Preview
           ↓
 ┌─────────────────┐
 │  滤镜参数输出    │
-│  (6 维参数)     │
+│  (5 维参数)     │
+│  曝光/对比度/   │
+│  饱和度/高光/   │
+│  阴影           │
 └─────────────────┘
 ```
 
@@ -365,21 +391,20 @@ fun analyzeScene(inputImage: InputImage) {
 #### 4.4.2 AI 增强功能
 
 ```kotlin
-// MobileNetV2 图像优化模型
+// MobileNetV2 图像优化模型（ONNX Runtime 推理）
 data class ColorEnhancementResult(
     val exposure: Float,
     val contrast: Float,
     val saturation: Float,
-    val sharpness: Float,
-    val temperature: Float,
     val highlights: Float,
+    val shadow: Float,
     val confidence: Float
 )
 
 // 应用 AI 增强
 fun applyAIEnhancement(imageUri: String) {
     val inputImage = loadAndResize(imageUri, 224, 224)
-    val result = mobileNetV2 inference(inputImage)
+    val result = onnxSession.run(inputImage)
 
     // 应用参数限制
     val clampedResult = clampEnhancement(result)
@@ -410,7 +435,9 @@ fun applyAIEnhancement(imageUri: String) {
 | **ML Kit Image Labeling** | 17.0.9 | 场景识别 | Google 官方、离线可用、性能优化 |
 | **ML Kit Face Detection** | 16.1.7 | 人脸检测 | 高精度、实时性好 |
 | **ML Kit Object Detection** | 17.0.2 | 对象检测 | 智能裁剪支持 |
-| **ONNX Runtime** | 1.19.0 | 模型推理 | 跨平台、高性能、支持量化 |
+| **ONNX Runtime** | 1.19.0 | 模型推理 | 跨平台、高性能、支持 MobileNetV2 |
+| **OpenCV** | 4.9.0 | 构图分析 | 边缘检测、线检测、对称性分析 |
+| **阿里云百炼 API** | - | 云端大模型 | qwen-vl-plus 视觉语言模型，深度场景理解 |
 
 ### 5.3 架构模式
 
@@ -633,10 +660,11 @@ val analysisBitmap = Bitmap.createScaledBitmap(
 
 | 原则 | 实现方式 |
 |------|---------|
-| 本地处理 | 所有 AI 推理在设备端完成 |
-| 无需网络 | 应用不需要网络权限 |
+| 本地优先 | 实时性要求高的 AI 功能在设备端完成 |
+| 云端可选 | 云端大模型功能需用户主动启用，API Key 加密存储 |
 | 数据隔离 | 照片数据存储在应用私有目录 |
 | 即时删除 | 临时文件处理后立即删除 |
+| 传输安全 | 云端 API 使用 HTTPS 加密传输 |
 
 ### 8.2 权限最小化
 
@@ -644,7 +672,8 @@ val analysisBitmap = Bitmap.createScaledBitmap(
 <!-- AndroidManifest.xml -->
 <uses-permission android:name="android.permission.CAMERA" />
 <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-<!-- 无网络权限声明 -->
+<uses-permission android:name="android.permission.INTERNET" />
+<!-- INTERNET 权限仅用于云端 AI 功能，本地功能无需网络 -->
 ```
 
 ### 8.3 模型安全
@@ -716,22 +745,22 @@ fun AISmartCameraTheme(
 ### 10.1 设计亮点
 
 1. **"拍前辅助"理念**：差异化定位，从源头提升摄影质量
-2. **本地 AI 处理**：保护隐私，无需网络
+2. **双轨 AI 架构**：本地轻量化模型保证实时性，云端大模型提供深度理解
 3. **极简交互设计**：零学习成本，即开即用
 4. **性能优化**：智能帧率控制，流畅的用户体验
 5. **自然增强美学**：追求真实，避免过度处理
 
 ### 10.2 技术创新
 
-1. **边缘 AI 推理**：ML Kit + MobileNetV2 本地部署
-2. **多模型融合**：场景识别 + 构图分析 + 色彩增强
-3. **性能优化策略**：Bitmap 复用、帧率控制、模型量化
+1. **双轨 AI 推理**：本地 ONNX Runtime + ML Kit + OpenCV，云端 qwen-vl-plus 大模型
+2. **多模型融合**：场景识别 + 构图分析 + 色彩增强 + 云端深度理解
+3. **性能优化策略**：Bitmap 复用、帧率控制、OpenGL ES 渲染管线
 
 ### 10.3 用户价值
 
 1. **降低摄影门槛**：让普通用户也能拍出专业级照片
 2. **提升审美素养**：通过实时指导培养构图意识
-3. **保护用户隐私**：纯本地处理，数据不外泄
+3. **灵活隐私保护**：本地功能无需网络，云端功能用户自主选择
 
 ---
 

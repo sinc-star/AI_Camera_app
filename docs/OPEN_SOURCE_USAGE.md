@@ -12,7 +12,7 @@
 
 | 许可证类型        | 数量 | 兼容性    | 说明           |
 | ------------ | -- | ------ | ------------ |
-| Apache 2.0   | 18 | ✅ 完全兼容 | 允许商业使用、修改和分发 |
+| Apache 2.0   | 19 | ✅ 完全兼容 | 允许商业使用、修改和分发 |
 | MIT          | 2  | ✅ 完全兼容 | 最宽松的开源许可证    |
 | BSD 2-Clause | 1  | ✅ 完全兼容 | 允许商业使用       |
 | EPL 1.0      | 1  | ✅ 兼容   | 需要公开修改内容     |
@@ -207,6 +207,16 @@
 - **用途**：EXIF 信息处理
 - **使用方式**：图片 EXIF 信息读取和写入
 - **项目地址**：<https://developer.android.com/reference/androidx/exifinterface/media/ExifInterface>
+- **合规性**：✅ 已保留许可证声明
+
+#### 19. OpenCV for Android
+
+- **版本**：4.9.0
+- **许可证**：Apache License 2.0
+- **用途**：图像处理与构图分析
+- **使用方式**：边缘检测、水平线检测、对称性分析、引导线检测、前景区域检测、色彩分布分析
+- **项目地址**：<https://opencv.org/>
+- **作者**：OpenCV Team
 - **合规性**：✅ 已保留许可证声明
 
 ***
@@ -571,8 +581,8 @@ androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", versi
 
 - 基础架构：MobileNetV2（Apache 2.0）
 - 输入：224x224 RGB 图像
-- 输出：6 维调色参数（曝光、对比度、饱和度、锐化、色温、高光）
-- 模型大小：约 14 MB
+- 输出：5 维调色参数（曝光、对比度、饱和度、高光、阴影）
+- 模型大小：约 3 MB
 - 推理时间：< 100ms（移动端）
 
 **训练细节**：
@@ -588,7 +598,7 @@ androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", versi
 
 - 模型格式：ONNX
 - 推理引擎：ONNX Runtime
-- 量化：INT8 量化（可选）
+- 优化：ONNX 图优化 + 动态量化（可选）
 
 **合规性**：
 
@@ -719,6 +729,9 @@ implementation("io.coil-kt:coil-compose:2.4.0")
 // Security & Exif
 implementation("androidx.security:security-crypto:1.1.0-alpha06")
 implementation("androidx.exifinterface:exifinterface:1.3.7")
+
+// OpenCV
+implementation("org.opencv:opencv-android:4.9.0")
 
 // 测试库
 testImplementation("junit:junit:4.13.2")

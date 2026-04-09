@@ -11,7 +11,10 @@ import com.aicamera.app.backend.models.SceneDetectionResult
 import com.aicamera.app.backend.models.SceneType
 import com.aicamera.app.backend.models.SuggestionPriority
 import com.aicamera.app.backend.models.SuggestionType
+import com.aicamera.app.backend.opencv.CompositionEngine
+import com.aicamera.app.backend.opencv.OpenCvHelper
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.face.FaceLandmark
@@ -107,7 +110,7 @@ object AiBackend {
     }
 
     /**
-     * Composition analysis using ML Kit face detector.
+     * Composition analysis using ML Kit face detector + OpenCV geometric analysis.
      */
     suspend fun analyzeComposition(imageProxy: ImageProxy, sceneType: SceneType): CompositionAnalysisResult {
         val mediaImage = imageProxy.image
@@ -132,107 +135,20 @@ object AiBackend {
 
         return try {
             val faces = detector.process(image).await()
-            if (faces.isEmpty()) {
-                return CompositionAnalysisResult(
-                    success = true,
-                    suggestions = listOf(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "将主体尽量放在画面三分线附近",
-                            confidence = 0.5f,
-                            priority = SuggestionPriority.LOW
-                        )
-                    ),
-                    compositionScore = 0.5f,
-                    idealScore = 0.90f,
-                    detectedFaces = emptyList()
-                )
-            }
 
-            val w = max(1, imageProxy.width).toFloat()
-            val h = max(1, imageProxy.height).toFloat()
-
-            val main = faces.maxBy { it.boundingBox.width() * it.boundingBox.height() }
-            val leftEye = main.getLandmark(FaceLandmark.LEFT_EYE)?.position
-            val rightEye = main.getLandmark(FaceLandmark.RIGHT_EYE)?.position
-            val eyeY = if (leftEye != null && rightEye != null) {
-                (leftEye.y + rightEye.y) / 2f
-            } else {
-                main.boundingBox.centerY().toFloat()
-            }
-
-            val relativeEyeY = (eyeY / h).coerceIn(0f, 1f)
-            val idealEyeY = when (sceneType) {
-                SceneType.PORTRAIT -> 0.33f
-                else -> 0.40f
-            }
-            val diff = idealEyeY - relativeEyeY
-
-            val relFaceWidth = (main.boundingBox.width().toFloat() / w).coerceIn(0f, 1f)
-
-            val suggestions = buildList {
-                if (diff > 0.05f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "📍 向上移动一点，将眼睛靠近上方三分线",
-                            confidence = 0.85f,
-                            priority = SuggestionPriority.HIGH
-                        )
-                    )
-                } else if (diff < -0.05f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "📍 向下移动一点，将眼睛靠近上方三分线",
-                            confidence = 0.85f,
-                            priority = SuggestionPriority.HIGH
-                        )
-                    )
-                }
-
-                if (relFaceWidth < 0.30f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.DISTANCE,
-                            message = "稍微靠近一点，主体占比更理想",
-                            confidence = 0.72f,
-                            priority = SuggestionPriority.MEDIUM
-                        )
-                    )
-                } else if (relFaceWidth > 0.65f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.DISTANCE,
-                            message = "稍微后退一点，留出更多背景空间",
-                            confidence = 0.72f,
-                            priority = SuggestionPriority.MEDIUM
-                        )
-                    )
+            // 如果有OpenCV支持，使用高级分析
+            if (OpenCvHelper.isReady() && faces.isNotEmpty()) {
+                // 将ImageProxy转换为Bitmap用于OpenCV分析
+                val bitmap = imageProxyToBitmap(imageProxy)
+                if (bitmap != null) {
+                    val detailedResult = CompositionEngine.analyzeAdvanced(bitmap, faces, sceneType)
+                    bitmap.recycle()
+                    return CompositionEngine.toLegacyResult(detailedResult)
                 }
             }
 
-            val score = (1.0f - min(abs(diff) * 2f, 1.0f))
-                .coerceIn(0f, 1f)
-
-            val detectedFaces = listOf(
-                DetectedFace(
-                    x = (main.boundingBox.left / w).coerceIn(0f, 1f),
-                    y = (main.boundingBox.top / h).coerceIn(0f, 1f),
-                    width = (main.boundingBox.width() / w).coerceIn(0f, 1f),
-                    height = (main.boundingBox.height() / h).coerceIn(0f, 1f),
-                    eyeY = relativeEyeY,
-                    confidence = (main.trackingId?.toFloat() ?: 0f)
-                )
-            )
-
-            CompositionAnalysisResult(
-                success = true,
-                suggestions = suggestions,
-                compositionScore = score,
-                idealScore = 0.90f,
-                detectedFaces = detectedFaces
-            )
+            // 降级到基础分析
+            basicCompositionAnalysis(faces, imageProxy.width, imageProxy.height, sceneType)
         } catch (e: Throwable) {
             Log.e("AiBackend", "analyzeComposition failed", e)
             CompositionAnalysisResult(
@@ -246,7 +162,135 @@ object AiBackend {
     }
 
     /**
+     * 基础构图分析（无OpenCV时使用）
+     */
+    private fun basicCompositionAnalysis(
+        faces: List<Face>,
+        width: Int,
+        height: Int,
+        sceneType: SceneType
+    ): CompositionAnalysisResult {
+        if (faces.isEmpty()) {
+            return CompositionAnalysisResult(
+                success = true,
+                suggestions = listOf(
+                    CompositionSuggestion(
+                        type = SuggestionType.POSITION,
+                        message = "将主体尽量放在画面三分线附近",
+                        confidence = 0.5f,
+                        priority = SuggestionPriority.LOW
+                    )
+                ),
+                compositionScore = 0.5f,
+                idealScore = 0.90f,
+                detectedFaces = emptyList()
+            )
+        }
+
+        val w = max(1, width).toFloat()
+        val h = max(1, height).toFloat()
+
+        val main = faces.maxBy { it.boundingBox.width() * it.boundingBox.height() }
+        val leftEye = main.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rightEye = main.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+        val eyeY = if (leftEye != null && rightEye != null) {
+            (leftEye.y + rightEye.y) / 2f
+        } else {
+            main.boundingBox.centerY().toFloat()
+        }
+
+        val relativeEyeY = (eyeY / h).coerceIn(0f, 1f)
+        val idealEyeY = when (sceneType) {
+            SceneType.PORTRAIT -> 0.33f
+            else -> 0.40f
+        }
+        val diff = idealEyeY - relativeEyeY
+
+        val relFaceWidth = (main.boundingBox.width().toFloat() / w).coerceIn(0f, 1f)
+
+        val suggestions = buildList {
+            if (diff > 0.05f) {
+                add(
+                    CompositionSuggestion(
+                        type = SuggestionType.POSITION,
+                        message = "向上移动一点，将眼睛靠近上方三分线",
+                        confidence = 0.85f,
+                        priority = SuggestionPriority.HIGH
+                    )
+                )
+            } else if (diff < -0.05f) {
+                add(
+                    CompositionSuggestion(
+                        type = SuggestionType.POSITION,
+                        message = "向下移动一点，将眼睛靠近上方三分线",
+                        confidence = 0.85f,
+                        priority = SuggestionPriority.HIGH
+                    )
+                )
+            }
+
+            if (relFaceWidth < 0.30f) {
+                add(
+                    CompositionSuggestion(
+                        type = SuggestionType.DISTANCE,
+                        message = "靠近半步，主体更突出",
+                        confidence = 0.72f,
+                        priority = SuggestionPriority.MEDIUM
+                    )
+                )
+            } else if (relFaceWidth > 0.65f) {
+                add(
+                    CompositionSuggestion(
+                        type = SuggestionType.DISTANCE,
+                        message = "后退半步，留更多空间",
+                        confidence = 0.72f,
+                        priority = SuggestionPriority.MEDIUM
+                    )
+                )
+            }
+        }
+
+        val score = (1.0f - min(abs(diff) * 2f, 1.0f))
+            .coerceIn(0f, 1f)
+
+        val detectedFaces = listOf(
+            DetectedFace(
+                x = (main.boundingBox.left / w).coerceIn(0f, 1f),
+                y = (main.boundingBox.top / h).coerceIn(0f, 1f),
+                width = (main.boundingBox.width() / w).coerceIn(0f, 1f),
+                height = (main.boundingBox.height() / h).coerceIn(0f, 1f),
+                eyeY = relativeEyeY,
+                confidence = (main.trackingId?.toFloat() ?: 0f)
+            )
+        )
+
+        return CompositionAnalysisResult(
+            success = true,
+            suggestions = suggestions,
+            compositionScore = score,
+            idealScore = 0.90f,
+            detectedFaces = detectedFaces
+        )
+    }
+
+    /**
+     * 将ImageProxy转换为Bitmap
+     */
+    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        return try {
+            val buffer = imageProxy.planes[0].buffer
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (e: Exception) {
+            Log.e("AiBackend", "Failed to convert ImageProxy to Bitmap", e)
+            null
+        }
+    }
+
+    /**
      * Composition analysis from a [Bitmap] (useful for PreviewView.bitmap).
+     * 使用 OpenCV 增强分析
      */
     suspend fun analyzeComposition(bitmap: Bitmap, sceneType: SceneType): CompositionAnalysisResult {
         val image = InputImage.fromBitmap(bitmap, 0)
@@ -260,106 +304,15 @@ object AiBackend {
 
         return try {
             val faces = detector.process(image).await()
-            if (faces.isEmpty()) {
-                return CompositionAnalysisResult(
-                    success = true,
-                    suggestions = listOf(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "将主体尽量放在画面三分线附近",
-                            confidence = 0.5f,
-                            priority = SuggestionPriority.LOW
-                        )
-                    ),
-                    compositionScore = 0.5f,
-                    idealScore = 0.90f,
-                    detectedFaces = emptyList()
-                )
+
+            // 如果有OpenCV支持且检测到人脸，使用高级分析
+            if (OpenCvHelper.isReady() && faces.isNotEmpty()) {
+                val detailedResult = CompositionEngine.analyzeAdvanced(bitmap, faces, sceneType)
+                return CompositionEngine.toLegacyResult(detailedResult)
             }
 
-            val w = max(1, bitmap.width).toFloat()
-            val h = max(1, bitmap.height).toFloat()
-
-            val main = faces.maxBy { it.boundingBox.width() * it.boundingBox.height() }
-            val leftEye = main.getLandmark(FaceLandmark.LEFT_EYE)?.position
-            val rightEye = main.getLandmark(FaceLandmark.RIGHT_EYE)?.position
-            val eyeY = if (leftEye != null && rightEye != null) {
-                (leftEye.y + rightEye.y) / 2f
-            } else {
-                main.boundingBox.centerY().toFloat()
-            }
-
-            val relativeEyeY = (eyeY / h).coerceIn(0f, 1f)
-            val idealEyeY = when (sceneType) {
-                SceneType.PORTRAIT -> 0.33f
-                else -> 0.40f
-            }
-            val diff = idealEyeY - relativeEyeY
-
-            val relFaceWidth = (main.boundingBox.width().toFloat() / w).coerceIn(0f, 1f)
-            val suggestions = buildList {
-                if (diff > 0.05f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "📍 向上移动一点，将眼睛靠近上方三分线",
-                            confidence = 0.85f,
-                            priority = SuggestionPriority.HIGH
-                        )
-                    )
-                } else if (diff < -0.05f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.POSITION,
-                            message = "📍 向下移动一点，将眼睛靠近上方三分线",
-                            confidence = 0.85f,
-                            priority = SuggestionPriority.HIGH
-                        )
-                    )
-                }
-
-                if (relFaceWidth < 0.30f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.DISTANCE,
-                            message = "稍微靠近一点，主体占比更理想",
-                            confidence = 0.72f,
-                            priority = SuggestionPriority.MEDIUM
-                        )
-                    )
-                } else if (relFaceWidth > 0.65f) {
-                    add(
-                        CompositionSuggestion(
-                            type = SuggestionType.DISTANCE,
-                            message = "稍微后退一点，留出更多背景空间",
-                            confidence = 0.72f,
-                            priority = SuggestionPriority.MEDIUM
-                        )
-                    )
-                }
-            }
-
-            val score = (1.0f - min(abs(diff) * 2f, 1.0f))
-                .coerceIn(0f, 1f)
-
-            val detectedFaces = listOf(
-                DetectedFace(
-                    x = (main.boundingBox.left / w).coerceIn(0f, 1f),
-                    y = (main.boundingBox.top / h).coerceIn(0f, 1f),
-                    width = (main.boundingBox.width() / w).coerceIn(0f, 1f),
-                    height = (main.boundingBox.height() / h).coerceIn(0f, 1f),
-                    eyeY = relativeEyeY,
-                    confidence = (main.trackingId?.toFloat() ?: 0f)
-                )
-            )
-
-            CompositionAnalysisResult(
-                success = true,
-                suggestions = suggestions,
-                compositionScore = score,
-                idealScore = 0.90f,
-                detectedFaces = detectedFaces
-            )
+            // 降级到基础分析
+            basicCompositionAnalysis(faces, bitmap.width, bitmap.height, sceneType)
         } catch (e: Throwable) {
             Log.e("AiBackend", "analyzeComposition(bitmap) failed", e)
             CompositionAnalysisResult(

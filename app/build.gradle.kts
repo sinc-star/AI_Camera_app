@@ -87,4 +87,7 @@ dependencies {
 
     // Security Crypto for encrypted preferences
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // OpenCV for Android (official from Maven Central)
+    implementation("org.opencv:opencv:4.9.0")
 }

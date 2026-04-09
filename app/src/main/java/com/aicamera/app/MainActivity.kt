@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import com.aicamera.app.backend.color.ColorBackend
+import com.aicamera.app.backend.opencv.OpenCvHelper
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -62,6 +63,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val success = ColorBackend.initialize(this@MainActivity)
             android.util.Log.i("MainActivity", "ONNX model initialization: ${if (success) "success" else "failed"}")
+        }
+
+        // 初始化 OpenCV（用于构图分析）
+        lifecycleScope.launch {
+            val success = OpenCvHelper.init()
+            android.util.Log.i("MainActivity", "OpenCV initialization: ${if (success) "success" else "failed"}")
         }
 
         setContent {
