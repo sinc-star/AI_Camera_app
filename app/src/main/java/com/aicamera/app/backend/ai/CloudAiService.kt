@@ -54,38 +54,38 @@ object CloudAiService {
     ): CloudAiResult = withContext(Dispatchers.IO) {
         val apiKey = getApiKey(context)
         if (apiKey.isNullOrBlank()) {
-            Log.w(TAG, "[云端AI] API Key未配置，跳过云端分析")
+            Log.w(TAG, "[云端 AI] API Key 未配置，跳过云端分析")
             return@withContext CloudAiResult(
                 success = false,
                 suggestions = emptyList(),
-                errorMessage = "请先在设置中配置API Key"
+                errorMessage = "请先在设置中配置 API Key"
             )
         }
 
-        Log.d(TAG, "[云端AI] 开始分析场景，模型: $MODEL_NAME")
-        Log.d(TAG, "[云端AI] 检测到物体: ${detectedObjects.joinToString(", ")}")
-        Log.d(TAG, "[云端AI] 当前设置: ISO=${currentSettings.iso ?: "自动"}, 快门=${currentSettings.shutterSpeed ?: "自动"}, EV=${currentSettings.ev ?: "自动"}")
+        Log.d(TAG, "[云端 AI] 开始分析场景，模型：$MODEL_NAME")
+        Log.d(TAG, "[云端 AI] 检测到物体：${detectedObjects.joinToString(", ")}")
+        Log.d(TAG, "[云端 AI] 当前设置：ISO=${currentSettings.iso ?: "自动"}, 快门=${currentSettings.shutterSpeed ?: "自动"}, EV=${currentSettings.ev ?: "自动"}")
 
         try {
             val base64Image = bitmapToBase64(bitmap)
             val prompt = buildPrompt(detectedObjects, currentSettings)
             
-            Log.d(TAG, "[云端AI] 正在调用API...")
+            Log.d(TAG, "[云端 AI] 正在调用 API...")
             val response = callApi(apiKey, prompt, base64Image)
             val result = parseResponse(response)
             
             if (result.success) {
-                Log.i(TAG, "[云端AI] 分析成功，建议: ${result.suggestions.joinToString(", ")}")
+                Log.i(TAG, "[云端 AI] 分析成功，建议：${result.suggestions.joinToString(", ")}")
             } else {
-                Log.w(TAG, "[云端AI] 分析失败: ${result.errorMessage}")
+                Log.w(TAG, "[云端 AI] 分析失败：${result.errorMessage}")
             }
             result
         } catch (e: Exception) {
-            Log.e(TAG, "[云端AI] 分析异常: ${e.message}", e)
+            Log.e(TAG, "[云端 AI] 分析异常：${e.message}", e)
             CloudAiResult(
                 success = false,
                 suggestions = emptyList(),
-                errorMessage = "AI分析失败: ${e.message}"
+                errorMessage = "AI 分析失败：${e.message}"
             )
         }
     }
@@ -109,40 +109,62 @@ object CloudAiService {
 
     private fun buildPrompt(detectedObjects: List<String>, currentSettings: CameraSettingsInfo): String {
         val objectsStr = if (detectedObjects.isNotEmpty()) {
-            "检测到的物体: ${detectedObjects.joinToString(", ")}"
+            "检测到的物体：${detectedObjects.joinToString(", ")}"
         } else {
             "未检测到特定物体"
         }
 
         return """
-你是一个专业的摄影指导。请根据照片内容给出简短的拍摄指导。
+你是一位专业摄影师和构图指导专家。请根据照片内容给出专业、具体的构图和拍摄建议。
 
 当前场景信息:
 $objectsStr
 
 当前相机设置:
 - ISO: ${currentSettings.iso ?: "自动"}
-- 快门速度: ${currentSettings.shutterSpeed ?: "自动"}
-- 曝光补偿: ${currentSettings.ev ?: "自动"}
+- 快门速度：${currentSettings.shutterSpeed ?: "自动"}
+- 曝光补偿：${currentSettings.ev ?: "自动"}
 
-请分析照片并给出1条具体的拍摄调整建议。
+请从以下维度分析照片，给出 2-3 条具体、可执行的专业建议：
 
-建议类型及格式要求:
-1. 位置调整: "往左移一点"、"往右移一点"、"抬高镜头"、"降低镜头"、"靠近一点"、"后退一点"
-2. 对焦调整: "对焦人脸"、"对焦背景"、"点击对焦"
-3. 曝光调整(必须指明参数): 
-   - 如需调亮: 说"调高ISO"或"调高曝光度"
-   - 如需调暗: 说"降低ISO"或"降低曝光度"
-   - 当前ISO为自动时优先说"曝光度"
-4. 其他操作: "开启闪光灯"、"关闭闪光灯"、"稳定手持"
+【构图指导】
+- 三分法：检查主体是否位于三分线交点或线上
+- 对称性：建筑、倒影等场景的对称轴是否居中
+- 引导线：是否有道路、河流等引导视线的元素
+- 前景层次：是否有前景增加画面深度
+- 留白处理：画面是否有适当留白，避免拥挤
+- 水平线：地平线、海平面是否水平
+
+【光线与色彩】
+- 光线方向：顺光、侧光、逆光的运用是否恰当
+- 对比度：明暗对比是否突出主体
+- 色彩搭配：冷暖色对比、相近色协调
+
+【拍摄参数】
+- 曝光：根据直方图判断是否过曝或欠曝
+- 景深：虚化程度是否适合当前场景
+- 快门：是否需要调整以捕捉动态或长曝光
+
+输出格式要求:
+每条建议按以下格式输出:
+[类型] 具体建议内容
+
+类型包括：构图、光线、参数、视角
+
+示例:
+[构图] 将人物向左移动，放在左侧三分线交点处
+[光线] 侧光角度较好，可略微调整角度增强立体感
+[参数] ISO 偏高，建议降低到 200 以减少噪点
+[视角] 尝试降低机位，以更低角度拍摄
 
 严格要求:
-1. 必须是可立即执行的物理操作或参数调整
-2. 不超过10个字
-3. 不要描述画面，不要评价照片
-4. 曝光类建议必须指明是调ISO还是曝光度
+1. 建议必须具体可执行，避免空泛描述
+2. 使用专业术语但保持易懂
+3. 针对检测到的物体和场景给出个性化建议
+4. 不要只说"调高/降低"，要说明调整到什么程度或为了什么效果
+5. 避免重复建议，每条建议都应有独立价值
 
-直接输出建议，不要添加任何其他内容。
+直接输出建议，不要添加开场白、总结或其他多余内容。
         """.trimIndent()
     }
 
@@ -177,7 +199,7 @@ $objectsStr
                         })
                     })
                 })
-                put("max_tokens", 200)
+                put("max_tokens", 500)
             }
 
             OutputStreamWriter(connection.outputStream).use { writer ->
@@ -188,7 +210,7 @@ $objectsStr
             val responseCode = connection.responseCode
             if (responseCode != HttpURLConnection.HTTP_OK) {
                 val errorStream = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw Exception("API请求失败 ($responseCode): $errorStream")
+                throw Exception("API 请求失败 ($responseCode): $errorStream")
             }
 
             return connection.inputStream.bufferedReader().readText()
@@ -205,7 +227,7 @@ $objectsStr
             return CloudAiResult(
                 success = false,
                 suggestions = emptyList(),
-                errorMessage = "API返回数据格式错误"
+                errorMessage = "API 返回数据格式错误"
             )
         }
 
@@ -218,14 +240,14 @@ $objectsStr
             return CloudAiResult(
                 success = false,
                 suggestions = emptyList(),
-                errorMessage = "AI未返回有效建议"
+                errorMessage = "AI 未返回有效建议"
             )
         }
 
         val suggestions = content.lines()
             .map { it.trim() }
             .filter { it.isNotBlank() }
-            .take(3)
+            .take(5)
 
         return CloudAiResult(
             success = true,
