@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
+import com.aicamera.app.backend.camera.CameraPreloadManager
 import com.aicamera.app.backend.color.ColorBackend
 import com.aicamera.app.backend.opencv.OpenCvHelper
 import kotlinx.coroutines.launch
@@ -98,6 +99,10 @@ class MainActivity : ComponentActivity() {
 
         // 延迟初始化非关键资源，减少启动时间
         lifecycleScope.launch {
+            // 预加载相机资源
+            CameraPreloadManager.preload(this@MainActivity)
+            android.util.Log.i("MainActivity", "Camera preload started")
+            
             // 初始化 ONNX 模型
             val success = ColorBackend.initialize(this@MainActivity)
             android.util.Log.i("MainActivity", "ONNX model initialization: ${if (success) "success" else "failed"}")

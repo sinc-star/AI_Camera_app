@@ -87,6 +87,7 @@ import com.aicamera.app.backend.ai.CameraSettingsInfo
 import com.aicamera.app.backend.camera.CameraBackend
 import com.aicamera.app.backend.camera.CameraSession
 import com.aicamera.app.backend.camera.CameraAdvancedControls
+import com.aicamera.app.backend.camera.CameraPreloadManager
 import androidx.camera.camera2.interop.Camera2Interop
 import com.aicamera.app.backend.gallery.GalleryBackend
 import com.aicamera.app.backend.gallery.rememberLastPhotoUri
@@ -611,22 +612,26 @@ private fun CameraScreenContent(
             val bitmap = previewView.bitmap
             if (bitmap != null) {
                 try {
+                    // 在后台线程执行场景识别，确保UI线程不被阻塞
                     val result = withContext(Dispatchers.Default) { AiBackend.detectScene(bitmap) }
-                    sceneType = when (result.sceneType) {
-                        SceneType.PORTRAIT -> "人像拍摄"
-                        SceneType.LANDSCAPE -> "风景拍摄"
-                        SceneType.FOOD -> "美食拍摄"
-                        SceneType.NIGHT -> "夜景拍摄"
-                        SceneType.ARCHITECTURE -> "建筑拍摄"
-                        SceneType.AUTO -> "通用拍摄"
+                    // 回到主线程更新UI
+                    withContext(Dispatchers.Main) {
+                        sceneType = when (result.sceneType) {
+                            SceneType.PORTRAIT -> "人像拍摄"
+                            SceneType.LANDSCAPE -> "风景拍摄"
+                            SceneType.FOOD -> "美食拍摄"
+                            SceneType.NIGHT -> "夜景拍摄"
+                            SceneType.ARCHITECTURE -> "建筑拍摄"
+                            SceneType.AUTO -> "通用拍摄"
+                        }
+                        detectedObjects = result.detectedObjects
                     }
-                    detectedObjects = result.detectedObjects
                 } finally {
                     // 释放bitmap资源
                     bitmap.recycle()
                 }
             }
-            kotlinx.coroutines.delay(1000) // 增加延迟，减少CPU占用
+            kotlinx.coroutines.delay(1500) // 增加延迟，减少CPU占用
         }
     }
     
@@ -639,7 +644,7 @@ private fun CameraScreenContent(
                 kotlinx.coroutines.delay(5000)
                 continue
             }
-            kotlinx.coroutines.delay(8000) // 增加延迟，减少频率
+            kotlinx.coroutines.delay(10000) // 增加延迟，减少频率
             val bitmap = previewView.bitmap ?: continue
             try {
                 val settings = CameraSettingsInfo(
@@ -648,26 +653,39 @@ private fun CameraScreenContent(
                     ev = CameraBackend.ManualSettings.evIndex
                 )
                 
-                cloudAiTipPending = true
-                val result = CloudAiService.analyzeScene(context, bitmap, detectedObjects, settings)
-                cloudAiTipPending = false
+                withContext(Dispatchers.Main) {
+                    cloudAiTipPending = true
+                }
                 
-                if (result.success && result.suggestions.isNotEmpty()) {
-                    cloudAiTip = result.suggestions.first()
-                    // 云端建议优先级高，覆盖本地建议
-                    currentTip = cloudAiTip
-                    currentTipSource = TipSource.CLOUD
-                    showTip = true
-                    Log.i("CameraScreen", "[AI建议] 显示云端建议: $currentTip")
-                    kotlinx.coroutines.delay(4000)
+                // 在后台线程执行云端AI分析
+                val result = withContext(Dispatchers.IO) {
+                    CloudAiService.analyzeScene(context, bitmap, detectedObjects, settings)
+                }
+                
+                withContext(Dispatchers.Main) {
+                    cloudAiTipPending = false
+                    
+                    if (result.success && result.suggestions.isNotEmpty()) {
+                        cloudAiTip = result.suggestions.first()
+                        // 云端建议优先级高，覆盖本地建议
+                        currentTip = cloudAiTip
+                        currentTipSource = TipSource.CLOUD
+                        showTip = true
+                        Log.i("CameraScreen", "[AI建议] 显示云端建议: $currentTip")
+                    } else {
+                        // 云端调用失败，记录错误
+                        Log.w("CameraScreen", "[AI建议] 云端模型调用失败: ${result.errorMessage}，将使用本地模型兜底")
+                    }
+                }
+                
+                kotlinx.coroutines.delay(4000)
+                
+                withContext(Dispatchers.Main) {
                     // 只有当前显示的仍是这条云端建议时才隐藏
                     if (currentTipSource == TipSource.CLOUD && currentTip == cloudAiTip) {
                         showTip = false
                         currentTipSource = TipSource.NONE
                     }
-                } else {
-                    // 云端调用失败，记录错误
-                    Log.w("CameraScreen", "[AI建议] 云端模型调用失败: ${result.errorMessage}，将使用本地模型兜底")
                 }
             } finally {
                 // 释放bitmap资源
@@ -680,7 +698,7 @@ private fun CameraScreenContent(
     LaunchedEffect(showGuides) {
         if (!showGuides) return@LaunchedEffect
         while (isActive) {
-            kotlinx.coroutines.delay(3000) // 增加延迟，减少频率
+            kotlinx.coroutines.delay(4000) // 增加延迟，减少频率
             
             // 云端建议正在处理或已显示时，跳过本地建议
             if (cloudAiTipPending || currentTipSource == TipSource.CLOUD) {
@@ -697,22 +715,32 @@ private fun CameraScreenContent(
                     "建筑拍摄" -> SceneType.ARCHITECTURE
                     else -> SceneType.AUTO
                 }
+                // 在后台线程执行构图分析
                 val result = withContext(Dispatchers.Default) { AiBackend.analyzeComposition(bitmap, st) }
                 val suggestion = result.suggestions.firstOrNull()
-                if (result.success && suggestion != null && suggestion.message.isNotBlank()) {
-                    compositionTip = suggestion.message
-                    // 只在无云端建议时显示本地建议
-                    if (currentTipSource != TipSource.CLOUD) {
-                        currentTip = compositionTip
-                        currentTipSource = TipSource.LOCAL
-                        showTip = true
-                        Log.i("CameraScreen", "[AI建议] 显示本地建议: $currentTip")
-                        kotlinx.coroutines.delay(3000)
-                        // 只有当前显示的仍是这条本地建议时才隐藏
-                        if (currentTipSource == TipSource.LOCAL && currentTip == compositionTip) {
-                            showTip = false
-                            currentTipSource = TipSource.NONE
+                
+                // 回到主线程更新UI
+                withContext(Dispatchers.Main) {
+                    if (result.success && suggestion != null && suggestion.message.isNotBlank()) {
+                        compositionTip = suggestion.message
+                        // 只在无云端建议时显示本地建议
+                        if (currentTipSource != TipSource.CLOUD) {
+                            currentTip = compositionTip
+                            currentTipSource = TipSource.LOCAL
+                            showTip = true
+                            Log.i("CameraScreen", "[AI建议] 显示本地建议: $currentTip")
                         }
+                    }
+                }
+                
+                kotlinx.coroutines.delay(3000)
+                
+                // 回到主线程更新UI
+                withContext(Dispatchers.Main) {
+                    // 只有当前显示的仍是这条本地建议时才隐藏
+                    if (currentTipSource == TipSource.LOCAL && currentTip == compositionTip) {
+                        showTip = false
+                        currentTipSource = TipSource.NONE
                     }
                 }
             } finally {
@@ -724,8 +752,15 @@ private fun CameraScreenContent(
 
     // 初始化相机
         LaunchedEffect(Unit) {
-            val provider = ProcessCameraProvider.getInstance(context).get()
+            val startTime = System.currentTimeMillis()
+            Log.d("CameraScreen", "开始初始化相机")
+            
+            // 优先使用预加载的相机提供者
+            val provider = CameraPreloadManager.getPreloadedCameraProvider() ?: ProcessCameraProvider.getInstance(context).get()
             cameraProvider = provider
+            
+            val providerTime = System.currentTimeMillis() - startTime
+            Log.d("CameraScreen", "相机提供者获取耗时: ${providerTime}ms")
 
             // 按当前比例设置相机输出分辨率比例，使用高分辨率提升清晰度
             val preview = Preview.Builder()
@@ -773,6 +808,9 @@ private fun CameraScreenContent(
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        val totalTime = System.currentTimeMillis() - startTime
+        Log.d("CameraScreen", "相机初始化完成，总耗时: ${totalTime}ms")
 
         // 延迟初始化extensionsManager，不影响相机预览启动
         lifecycleScope.launch {

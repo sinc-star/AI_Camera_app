@@ -55,10 +55,14 @@ object OnnxColorModel {
             // 从 assets 复制模型到缓存目录
             val modelFile = copyModelFromAssets(context)
 
-            // 创建会话选项
+            // 创建会话选项，启用内存优化
             val sessionOptions = OrtSession.SessionOptions().apply {
                 setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
                 setIntraOpNumThreads(2)
+                // 启用内存优化
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL)
+                // 启用量化支持
+                setEnableCpuMemArena(true)
             }
 
             // 创建推理会话
@@ -81,7 +85,7 @@ object OnnxColorModel {
             }
 
             isInitialized = true
-            Log.i(TAG, "ONNX model initialized successfully")
+            Log.i(TAG, "ONNX model initialized successfully with memory optimization")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize ONNX model", e)
@@ -132,12 +136,8 @@ object OnnxColorModel {
         val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
         scaledBitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
 
+        // 直接创建 floatBuffer，避免中间数组，减少内存使用
         val floatBuffer = FloatBuffer.allocate(1 * 3 * INPUT_SIZE * INPUT_SIZE)
-
-        // 临时存储各通道数据，用于 CHW 格式转换
-        val channelB = FloatArray(INPUT_SIZE * INPUT_SIZE)
-        val channelG = FloatArray(INPUT_SIZE * INPUT_SIZE)
-        val channelR = FloatArray(INPUT_SIZE * INPUT_SIZE)
 
         for (i in pixels.indices) {
             val pixel = pixels[i]
@@ -146,21 +146,29 @@ object OnnxColorModel {
             val g = ((pixel shr 8) and 0xFF) / 255.0f
             val b = (pixel and 0xFF) / 255.0f
 
-            // BGR 格式存储到各通道
-            channelB[i] = (b - MEAN[0]) / STD[0]
-            channelG[i] = (g - MEAN[1]) / STD[1]
-            channelR[i] = (r - MEAN[2]) / STD[2]
+            // 按 BGR 顺序直接写入 floatBuffer，减少中间数组
+            floatBuffer.put((b - MEAN[0]) / STD[0]) // B 通道
         }
-
-        // 按 CHW 格式写入：先 B 通道，再 G 通道，最后 R 通道
-        // 这与 Python 的 np.transpose(image, (2, 0, 1)) 一致
-        for (i in channelB.indices) floatBuffer.put(channelB[i])
-        for (i in channelG.indices) floatBuffer.put(channelG[i])
-        for (i in channelR.indices) floatBuffer.put(channelR[i])
+        
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            val g = ((pixel shr 8) and 0xFF) / 255.0f
+            floatBuffer.put((g - MEAN[1]) / STD[1]) // G 通道
+        }
+        
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            val r = ((pixel shr 16) and 0xFF) / 255.0f
+            floatBuffer.put((r - MEAN[2]) / STD[2]) // R 通道
+        }
 
         floatBuffer.rewind()
 
         val inputShape = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
+        
+        // 释放临时 bitmap 资源
+        scaledBitmap.recycle()
+        
         return OnnxTensor.createTensor(ortEnvironment, floatBuffer, inputShape)
     }
 
