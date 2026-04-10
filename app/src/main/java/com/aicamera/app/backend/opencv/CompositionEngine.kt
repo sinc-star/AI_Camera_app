@@ -352,6 +352,7 @@ object CompositionEngine {
         val width = edges.cols()
         val height = edges.rows()
 
+
         val roiHeight = height / 3
         val startY = roiHeight
         val lines = mutableListOf<Float>()
