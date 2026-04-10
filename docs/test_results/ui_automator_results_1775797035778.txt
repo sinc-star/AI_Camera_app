@@ -1,0 +1,18 @@
+AI Camera UI Automator Test Results
+============================================================
+Device: sdk_gphone64_x86_64
+Android API: 36
+Package: com.aicamera.app
+Test Time: 2026-04-10 04:57:15
+============================================================
+
+[PASS] TC-18: 应用多次启动稳定性测试
+  Category: 稳定性
+  Duration: 11064ms
+  Time: 2026-04-10 04:57:15.776
+  Details: 应用连续启动 3 次均成功
+
+============================================================
+Summary: 1 tests, 1 passed, 0 failed, 0 skipped
+Total Duration: 11064ms
+============================================================

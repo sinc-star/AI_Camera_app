@@ -1,0 +1,18 @@
+AI Camera UI Automator Test Results
+============================================================
+Device: sdk_gphone64_x86_64
+Android API: 36
+Package: com.aicamera.app
+Test Time: 2026-04-10 04:58:37
+============================================================
+
+[PASS] TC-07: 构图辅助线切换测试
+  Category: 相机功能
+  Duration: 6490ms
+  Time: 2026-04-10 04:58:37.192
+  Details: 辅助线按钮可点击切换
+
+============================================================
+Summary: 1 tests, 1 passed, 0 failed, 0 skipped
+Total Duration: 6490ms
+============================================================

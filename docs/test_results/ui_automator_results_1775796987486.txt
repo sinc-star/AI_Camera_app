@@ -1,0 +1,18 @@
+AI Camera UI Automator Test Results
+============================================================
+Device: sdk_gphone64_x86_64
+Android API: 36
+Package: com.aicamera.app
+Test Time: 2026-04-10 04:56:27
+============================================================
+
+[PASS] TC-19: 相机信息栏显示测试
+  Category: 相机界面
+  Duration: 8294ms
+  Time: 2026-04-10 04:56:27.483
+  Details: 相机信息栏显示状态: 场景识别文本可见=true
+
+============================================================
+Summary: 1 tests, 1 passed, 0 failed, 0 skipped
+Total Duration: 8294ms
+============================================================

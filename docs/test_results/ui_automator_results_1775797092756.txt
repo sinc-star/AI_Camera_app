@@ -1,0 +1,18 @@
+AI Camera UI Automator Test Results
+============================================================
+Device: sdk_gphone64_x86_64
+Android API: 36
+Package: com.aicamera.app
+Test Time: 2026-04-10 04:58:12
+============================================================
+
+[PASS] TC-14: 云端AI辅助按钮测试
+  Category: 相机功能
+  Duration: 5978ms
+  Time: 2026-04-10 04:58:12.754
+  Details: 云端AI辅助按钮可点击（未配置API Key时为off状态）
+
+============================================================
+Summary: 1 tests, 1 passed, 0 failed, 0 skipped
+Total Duration: 5978ms
+============================================================
