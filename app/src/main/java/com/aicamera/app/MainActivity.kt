@@ -59,18 +59,6 @@ class MainActivity : ComponentActivity() {
         // 检查并创建桌面快捷方式
         createShortcutIfFirstLaunch()
 
-        // 初始化 ONNX 模型（在后台线程）
-        lifecycleScope.launch {
-            val success = ColorBackend.initialize(this@MainActivity)
-            android.util.Log.i("MainActivity", "ONNX model initialization: ${if (success) "success" else "failed"}")
-        }
-
-        // 初始化 OpenCV（用于构图分析）
-        lifecycleScope.launch {
-            val success = OpenCvHelper.init()
-            android.util.Log.i("MainActivity", "OpenCV initialization: ${if (success) "success" else "failed"}")
-        }
-
         setContent {
             // 从SharedPreferences读取主题设置，默认为专业主题
             var themeType by remember {
@@ -106,6 +94,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+
+        // 延迟初始化非关键资源，减少启动时间
+        lifecycleScope.launch {
+            // 初始化 ONNX 模型
+            val success = ColorBackend.initialize(this@MainActivity)
+            android.util.Log.i("MainActivity", "ONNX model initialization: ${if (success) "success" else "failed"}")
+            
+            // 初始化 OpenCV（用于构图分析）
+            val cvSuccess = OpenCvHelper.init()
+            android.util.Log.i("MainActivity", "OpenCV initialization: ${if (cvSuccess) "success" else "failed"}")
         }
     }
     
