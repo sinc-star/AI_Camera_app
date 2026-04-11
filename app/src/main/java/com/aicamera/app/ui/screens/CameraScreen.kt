@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.absoluteOffset
@@ -97,6 +98,7 @@ import com.aicamera.app.backend.models.FlashMode
 import com.aicamera.app.ui.panels.ParamSettingsPanel
 // 已移除 AspectRatioPanel 导入
 import kotlinx.coroutines.Dispatchers
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -131,6 +133,15 @@ private enum class TipSource {
     NONE,   // 无建议
     CLOUD,  // 云端大模型
     LOCAL   // 本地AI模型
+}
+
+/**
+ * 动画过渡状态枚举
+ */
+private enum class TransitionState {
+    IDLE,         // 空闲状态
+    BLURRING,     // 快速模糊阶段
+    CLEARING      // 缓慢清晰阶段
 }
 
 //接口
@@ -424,6 +435,16 @@ data class ViewfinderBounds(
 ) {
     companion object {
         val ZERO = ViewfinderBounds()
+        
+        // 线性插值函数，计算两个边界之间的中间状态
+        fun lerp(start: ViewfinderBounds, end: ViewfinderBounds, progress: Float): ViewfinderBounds {
+            return ViewfinderBounds(
+                left = start.left + (end.left - start.left) * progress,
+                top = start.top + (end.top - start.top) * progress,
+                width = start.width + (end.width - start.width) * progress,
+                height = start.height + (end.height - start.height) * progress
+            )
+        }
     }
 }
 
@@ -542,6 +563,15 @@ private fun CameraScreenContent(
     var lastScreenInfo by remember { mutableStateOf<ScreenInfo?>(null) }
     // 相机切换动画状态
     var isCameraSwitching by remember { mutableStateOf(false) }
+    
+    // 动画状态管理
+    var transitionState by remember { mutableStateOf(TransitionState.IDLE) }
+    var blurProgress by remember { mutableStateOf(0f) }
+    var boundsProgress by remember { mutableStateOf(0f) }
+    var startBounds by remember { mutableStateOf(ViewfinderBounds.ZERO) }
+    var targetBounds by remember { mutableStateOf(ViewfinderBounds.ZERO) }
+    var startRatio by remember { mutableStateOf(0.75f) }
+    var targetRatio by remember { mutableStateOf(0.75f) }
 
     // 轮询比例变化，实时更新 viewfinderBounds
     // 采用PhotonCamera策略：比例切换只调整UI遮罩，不重新绑定相机
@@ -552,6 +582,54 @@ private fun CameraScreenContent(
                 val startTime = System.currentTimeMillis()
                 Log.d("CameraScreen", "[比例切换] 开始: $previewAspectRatio -> $newRatio (仅UI调整)")
                 
+                // 记录初始状态
+                startRatio = previewAspectRatio
+                targetRatio = newRatio
+                startBounds = viewfinderBounds
+                
+                // 计算目标边界
+                lastScreenInfo?.let { info ->
+                    val cameraOutputWidth = previewUseCase?.resolutionInfo?.resolution?.width ?: 0
+                    val cameraOutputHeight = previewUseCase?.resolutionInfo?.resolution?.height ?: 0
+                    targetBounds = computeViewfinderBounds(
+                        info.left, info.top, info.width, info.height,
+                        newRatio, 0f,
+                        cameraOutputWidth, cameraOutputHeight,
+                        displayRotation
+                    )
+                }
+                
+                // 触发动画
+                transitionState = TransitionState.BLURRING
+                blurProgress = 0f
+                boundsProgress = 0f
+                
+                // 快速模糊阶段（50毫秒）
+                val blurStartTime = System.currentTimeMillis()
+                while (System.currentTimeMillis() - blurStartTime < 50) {
+                    blurProgress = minOf(1f, (System.currentTimeMillis() - blurStartTime) / 50f)
+                    kotlinx.coroutines.delay(16) // 约60fps
+                }
+                blurProgress = 1f
+                
+                // 进入清晰阶段
+                transitionState = TransitionState.CLEARING
+                
+                // 缓慢清晰阶段（250毫秒）
+                val clearStartTime = System.currentTimeMillis()
+                while (System.currentTimeMillis() - clearStartTime < 250) {
+                    val progress = (System.currentTimeMillis() - clearStartTime) / 250f
+                    blurProgress = 1f - progress
+                    boundsProgress = progress
+                    kotlinx.coroutines.delay(16) // 约60fps
+                }
+                blurProgress = 0f
+                boundsProgress = 1f
+                
+                // 完成动画
+                transitionState = TransitionState.IDLE
+                
+                // 更新比例和UI
                 previewAspectRatio = newRatio
                 
                 // 同步 PreviewView scaleType
@@ -813,7 +891,7 @@ private fun CameraScreenContent(
         Log.d("CameraScreen", "相机初始化完成，总耗时: ${totalTime}ms")
 
         // 延迟初始化extensionsManager，不影响相机预览启动
-        lifecycleScope.launch {
+        lifecycleOwner.lifecycleScope.launch {
             extensionsManager = try {
                 ExtensionsManager.getInstanceAsync(context, provider).get()
             } catch (_: Throwable) {
@@ -1042,12 +1120,22 @@ private fun CameraScreenContent(
 
         // 取景框边框 - 仅显示拍摄范围边框，预览全屏显示（苹果相机风格）
         if (viewfinderBounds.width > 0) {
-            ViewfinderMask(viewfinderBounds, themeType)
+            val currentBounds = if (boundsProgress > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
+                ViewfinderBounds.lerp(startBounds, targetBounds, boundsProgress)
+            } else {
+                viewfinderBounds
+            }
+            ViewfinderMask(currentBounds, themeType)
         }
 
         // 构图辅助线 - 基于实际预览区域绘制，与取景框同步偏移
         if (showGuides && viewfinderBounds.width > 0) {
-            CompositionGuides(viewfinderBounds, themeType)
+            val currentBounds = if (boundsProgress > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
+                ViewfinderBounds.lerp(startBounds, targetBounds, boundsProgress)
+            } else {
+                viewfinderBounds
+            }
+            CompositionGuides(currentBounds, themeType)
 
         }
 
@@ -1134,6 +1222,16 @@ private fun CameraScreenContent(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.7f))
+            )
+        }
+        
+        // 比例切换时的模糊覆盖层
+        if (blurProgress > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(radius = (blurProgress * 20f).dp) // 最大20dp模糊
+                    .background(Color.Black.copy(alpha = blurProgress * 0.2f)) // 轻微变暗
             )
         }
 

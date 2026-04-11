@@ -59,10 +59,6 @@ object OnnxColorModel {
             val sessionOptions = OrtSession.SessionOptions().apply {
                 setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
                 setIntraOpNumThreads(2)
-                // 启用内存优化
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL)
-                // 启用量化支持
-                setEnableCpuMemArena(true)
             }
 
             // 创建推理会话
