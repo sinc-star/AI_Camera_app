@@ -1161,13 +1161,15 @@ private fun CameraScreenContent(
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 24.dp),
+                .padding(top = 48.dp),
             themeType = themeType
         )
 
         // iOS风格展开的相机信息条 - 放在最顶部，渐变边缘
         Box(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 100.dp),
             contentAlignment = Alignment.TopCenter
         ) {
             // 渐变背景层
@@ -1202,7 +1204,7 @@ private fun CameraScreenContent(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 100.dp),
+                .padding(top = 140.dp),
             contentAlignment = Alignment.TopCenter
         ) {
             if (showTip && currentTip.isNotBlank()) {

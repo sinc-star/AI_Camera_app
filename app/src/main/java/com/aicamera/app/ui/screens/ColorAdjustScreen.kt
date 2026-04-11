@@ -189,7 +189,8 @@ fun ColorAdjustScreen(
                         }
                     }
                 },
-                themeType = themeType
+                themeType = themeType,
+                modifier = Modifier.padding(top = 24.dp)
             )
 
             // 图片预览区域 - 缩小图片，留出更多空间给调整参数

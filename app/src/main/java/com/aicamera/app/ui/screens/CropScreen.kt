@@ -239,7 +239,8 @@ fun CropScreen(
                     }
                 }
             },
-            themeType = themeType
+            themeType = themeType,
+            modifier = Modifier.padding(top = 24.dp)
         )
 
         // 底部工具栏
