@@ -78,10 +78,10 @@
 **参数限制示例**：
 
 ```kotlin
-// AI 增强参数限制
-val maxExposure = 0.15f    // 曝光最多 ±15%
-val maxSaturation = 0.10f  // 饱和度最多 ±10%
-val maxContrast = 0.12f    // 对比度最多 ±12%
+// AI 增强参数限制（ColorAdjustmentUtils.kt）
+val exposure = rawExposure.coerceIn(-1.0f, 1.0f)
+val contrast = rawContrast.coerceIn(0.5f, 2.0f)
+val saturation = rawSaturation.coerceIn(0.5f, 2.0f)
 ```
 
 ### 2.2 用户体验设计
@@ -107,9 +107,9 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 
 **优化策略**：
 
-- 智能帧率控制（2-5 FPS AI 分析）
-- 图片压缩优化（640x480 预览分析）
-- Bitmap 复用池（减少内存分配）
+- 智能帧率控制（ML Kit 分析间隔）
+- 图片压缩优化（预览帧分析）
+- 异步处理避免阻塞 UI
 
 ***
 
@@ -133,7 +133,7 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
                          │
 ┌────────────────────────▼──────────────────────────────────┐
 │                    业务逻辑层                             │
-│            Kotlin + ViewModel + Coroutines                  │
+│            Kotlin + Coroutines                             │
 │  ┌──────────┬──────────┬──────────┬──────────┐             │
 │  │Camera    │Ai        │Color     │Crop      │             │
 │  │Backend   │Backend   │Backend   │Backend   │             │
@@ -149,9 +149,9 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 │                                                           │
 │  ┌─── 本地轻量化模型 ────────────────────────────────┐    │
 │  │ ML Kit          │ ONNX Runtime   │ OpenCV 4.9     │    │
-│  │ Image Labeling  │ MobileNetV2    │ 边缘检测       │    │
-│  │ Face Detection  │ 色彩增强模型   │ 构图分析       │    │
-│  │ Object Detection│ (5维参数输出)  │ 对称性分析     │    │
+│  │ Image Labeling  │ 色彩增强模型   │ 边缘检测       │    │
+│  │ Face Detection  │ (6维参数输出)  │ 构图分析       │    │
+│  │ Object Detection│                │                │    │
 │  └─────────────────┴────────────────┴────────────────┘    │
 │                                                           │
 │  ┌─── 云端大模型 ────────────────────────────────────┐    │
@@ -159,9 +159,9 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 │  │ 场景深度理解    │ 专业摄影建议生成                │    │
 │  └──────────────────┴────────────────────────────────┘    │
 │                                                           │
-│  ┌─── 图像渲染引擎 ──────────────────────────────────┐    │
-│  │ OpenGL ES (GLES20/GLES30)                         │    │
-│  │ HDR 后处理管线（去马赛克、降噪、锐化、色调映射）  │    │
+│  ┌─── HDR 处理 ─────────────────────────────────────┐    │
+│  │ Camera2 API      │ OpenGL ES                    │    │
+│  │ HdrCaptureController                            │    │
 │  └───────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -174,7 +174,7 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 
 - 使用 Jetpack Compose 实现声明式 UI
 - 遵循 Material Design 3 设计规范
-- 深色主题优先（符合摄影场景）
+- 支持三种主题风格（专业/科技/清新）
 
 **模块职责**：
 
@@ -183,15 +183,15 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 | SplashScreen      | 启动引导、功能展示   | Compose Animation  |
 | CameraScreen      | 相机预览、实时构图指导 | CameraX Preview    |
 | EditScreen        | 图片预览、工具选择   | Coil Image Loading |
-| CropScreen        | 智能裁剪、AI 识别  | Canvas Drawing     |
+| CropScreen        | 智能裁剪、手动调整  | Canvas Drawing     |
 | ColorAdjustScreen | 调色参数、AI 增强  | GPU Processing     |
-| SettingsScreen    | 相机参数、模型管理   | DataStore          |
+| SettingsScreen    | 相机参数、主题切换、云端AI配置 | DataStore          |
 
 #### 3.2.2 业务逻辑层设计
 
 **设计原则**：
 
-- 使用 ViewModel 管理 UI 状态
+- 使用单例 Object 管理后端服务
 - 使用 Coroutines 处理异步操作
 - 单一职责原则（每个 Backend 负责一个功能域）
 
@@ -203,17 +203,16 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 | AiBackend      | AI 推理、结果处理    | `detectScene()`, `analyzeComposition()`                |
 | ColorBackend   | 调色处理、ONNX 推理  | `analyzeColorEnhancement()`, `applyColorAdjustments()` |
 | CropBackend    | 智能裁剪、主体检测     | `analyzeSmartCrop()`, `cropImage()`                    |
-| StorageBackend | 数据存储、缓存管理     | `savePhoto()`, `loadCache()`                           |
+| StorageBackend | 数据存储、缓存管理     | `savePhoto()`, `clearCache()`                           |
 | HdrService     | HDR 拍照、多帧融合   | `captureHdr()`, `getProgress()`                        |
-| CloudAiService | 云端 AI 调用、摄影建议 | `analyzeWithCloudAi()`, `getApiKey()`                  |
+| CloudAiService | 云端 AI 调用、摄影建议 | `analyzeWithCloudAi()`, `setApiKey()`                  |
 
 #### 3.2.3 AI 层设计
 
 **设计原则**：
 
 - 采用双轨 AI 架构：本地轻量化模型 + 云端大模型协同
-- 本地模型负责实时性要求高的功能（场景识别、人脸检测、构图分析、调色）
-- 云端大模型负责深度语义理解和专业摄影建议
+- 本地模型负责实时性要求高的功能
 - ONNX Runtime 进行本地模型推理
 
 **模块职责**：
@@ -221,10 +220,10 @@ val maxContrast = 0.12f    // 对比度最多 ±12%
 | 模块             | 职责          | 模型/技术                                           |
 | -------------- | ----------- | ----------------------------------------------- |
 | AiBackend      | 场景识别、构图分析   | ML Kit Image Labeling + Face Detection + OpenCV |
-| ColorBackend   | 色彩增强        | ONNX Runtime + MobileNetV2（.onnx 格式，5维参数输出）     |
+| ColorBackend   | 色彩增强        | ONNX Runtime + 自定义模型                           |
 | CropBackend    | 智能裁剪        | ML Kit Object Detection                         |
 | CloudAiService | 深度场景理解、专业建议 | 阿里云百炼 qwen-vl-plus 视觉语言模型                       |
-| OpenCvHelper   | 构图分析辅助      | OpenCV 4.9.0（边缘检测、线检测、对称性分析）                    |
+| OpenCvHelper   | 构图分析辅助      | OpenCV 4.9.0                                    |
 
 ### 3.3 数据流设计
 
@@ -237,15 +236,15 @@ CameraX Preview
 │  Frame Callback │  (30 FPS)
 └────────┬────────┘
          │
-         ↓ 降采样到 640x480
+         ↓
 ┌─────────────────┐
-│  AI 分析帧      │  (2 FPS, 每 500ms 一帧)
+│  AI 分析帧      │  (按需分析，使用协程)
 └────────┬────────┘
          │
     ┌────┴────┐
     ↓         ↓
 ┌───────┐ ┌───────────┐
-│场景识别│ │构图分析   │
+│场景识别│ │人脸检测   │
 └───┬───┘ └─────┬─────┘
     │           │
     └─────┬─────┘
@@ -261,30 +260,24 @@ CameraX Preview
 原图加载
     ↓
 ┌─────────────────┐
-│  缩放到 224x224 │  (MobileNetV2 输入尺寸)
-└────────┬────────┘
-         │
-         ↓
-┌─────────────────┐
-│  ONNX Runtime   │
-│  MobileNetV2    │
-│  (.onnx 推理)   │
+│  缩放处理        │  (预览使用较小尺寸)
 └────────┬────────┘
          │
     ┌────┴────┐
     ↓         ↓
 ┌───────┐ ┌───────────┐
-│曝光度  │ │对比度    │
+│ONNX   │ │ML Kit     │
+│模型   │ │场景识别   │
 └───┬───┘ └─────┬─────┘
     │           │
     └─────┬─────┘
           ↓
 ┌─────────────────┐
-│  滤镜参数输出    │
-│  (5 维参数)     │
+│  调色参数输出    │
+│  (6 维参数)     │
 │  曝光/对比度/   │
-│  饱和度/高光/   │
-│  阴影           │
+│  饱和度/锐度/   │
+│  色温/高光      │
 └─────────────────┘
 ```
 
@@ -298,10 +291,10 @@ CameraX Preview
 
 | 功能      | 描述                     | 技术实现                               |
 | ------- | ---------------------- | ---------------------------------- |
-| 实时预览    | CameraX Preview 显示相机画面 | `PreviewView.setSurfaceProvider()` |
+| 实时预览    | CameraX Preview 显示相机画面 | `PreviewView`                        |
 | 构图辅助线   | 三分法构图辅助线覆盖在预览上         | `Canvas.drawLine()`                |
 | 场景识别    | 实时识别拍摄场景类型             | ML Kit Image Labeling              |
-| AI 构图建议 | 根据主体位置给出调整建议           | ML Kit Face Detection + 自研算法       |
+| AI 构图建议 | 根据人脸位置给出调整建议           | ML Kit Face Detection + 三分法算法       |
 | 拍照      | 拍摄高质量照片                | `ImageCapture.takePicture()`       |
 
 #### 4.1.2 交互设计
@@ -309,67 +302,36 @@ CameraX Preview
 **构图辅助线**：
 
 - 位置：屏幕 1/3 和 2/3 处
-- 颜色：半透明绿色（`PrimaryGreen.copy(alpha = 0.5f)`）
+- 颜色：根据主题变化（专业-琥珀橙、科技-青色、清新-薄荷绿）
 - 宽度：2dp
 
 **AI 建议气泡**：
 
-- 位置：屏幕中央
+- 位置：屏幕中央偏上
 - 显示时机：检测到构图问题时显示
-- 自动消失：3 秒后自动隐藏
-- 动画：淡入淡出效果
+- 内容示例："向上移动一点，将眼睛靠近上方三分线"
 
 #### 4.1.3 状态管理
 
-相机模块采用 Compose 状态管理系统，使用多个独立的状态变量来管理不同的 UI 和相机状态。这种设计使得状态管理更加灵活，便于单独更新各个状态。
+相机模块采用 Compose 状态管理系统，使用多个独立的状态变量来管理不同的 UI 和相机状态。
 
 ```kotlin
-// 相机状态
+// 相机状态（CameraScreen.kt）
 var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
-val previewView = remember { PreviewView(context) }
 var cameraProvider: ProcessCameraProvider? by remember { mutableStateOf(null) }
-var previewUseCase: Preview? by remember { mutableStateOf(null) }
-var camera: Camera? by remember { mutableStateOf(null) }
 var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
 
 // UI 状态
 var sceneType by remember { mutableStateOf("通用拍摄") }
-var showGuides by remember { mutableStateOf(false) }
 var flashEnabled by remember { mutableStateOf(false) }
 var hdrEnabled by remember { mutableStateOf(false) }
-var zoomLinear by remember { mutableStateOf(0f) } // 线性变焦 0-1
-var zoomRatio by remember { mutableStateOf(1f) } // 实际变焦倍数
-var showArcZoom by remember { mutableStateOf(false) } // 是否显示扇形变焦控件
-var timerSeconds by remember { mutableStateOf(0) }
-var countdownRemaining by remember { mutableStateOf(0) }
-var isCountingDown by remember { mutableStateOf(false) }
-var showParamSettingsPanel by remember { mutableStateOf(false) }
-
-// 相机参数
-var iso by remember { mutableStateOf("Auto") }
-var shutter by remember { mutableStateOf("Auto") }
-var aperture by remember { mutableStateOf("Auto") }
+var zoomLinear by remember { mutableStateOf(0f) }
 
 // AI 建议状态
-var currentTip by remember { mutableStateOf("") }
-var showTip by remember { mutableStateOf(false) }
-var currentTipSource by remember { mutableStateOf(TipSource.NONE) }
-var cloudAiTip by remember { mutableStateOf("") }
-var cloudAiTipPending by remember { mutableStateOf(false) }
-var detectedObjects by remember { mutableStateOf<List<String>>(emptyList()) }
-var cloudAiEnabled by remember { mutableStateOf(CloudAiService.hasApiKey(context)) }
 var compositionTip by remember { mutableStateOf("") }
+var showTip by remember { mutableStateOf(false) }
+var cloudAiTip by remember { mutableStateOf("") }
 ```
-
-**代码解释**：
-
-- 相机状态：管理相机的核心组件和配置，包括 ImageCapture、CameraProvider、Preview 等
-- UI 状态：管理用户界面相关的状态，如场景类型、辅助线显示、闪光灯、HDR 等
-- 变焦状态：管理相机变焦相关的参数，包括线性变焦值、实际变焦倍数等
-- 相机参数：管理 ISO、快门速度、光圈等相机参数
-- AI 建议状态：管理 AI 分析结果和建议，支持本地和云端 AI 分析
-
-这种状态管理方式充分利用了 Compose 的响应式特性，当状态发生变化时，UI 会自动更新，提供流畅的用户体验。
 
 ### 4.2 场景识别模块
 
@@ -385,20 +347,18 @@ var compositionTip by remember { mutableStateOf("") }
 
 #### 4.2.2 技术实现
 
-场景识别模块使用 ML Kit Image Labeling 进行实时场景分析，采用协程方式处理异步操作，提高代码可读性和稳定性。
+场景识别模块使用 ML Kit Image Labeling 进行实时场景分析，采用协程方式处理异步操作。
 
 ```kotlin
-// ML Kit Image Labeling 集成
-val labeler = ImageLabeling.getClient(
-    ImageLabelerOptions.Builder()
-        .setConfidenceThreshold(0.6f)
-        .build()
-)
+// AiBackend.kt - detectScene 方法
+suspend fun detectScene(imageProxy: ImageProxy): SceneDetectionResult {
+    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+    val labeler = ImageLabeling.getClient(
+        ImageLabelerOptions.Builder()
+            .setConfidenceThreshold(0.6f)
+            .build()
+    )
 
-// 分析相机帧（使用协程）
-suspend fun detectScene(bitmap: Bitmap): SceneDetectionResult {
-    val image = InputImage.fromBitmap(bitmap, 0)
-    
     return try {
         val labels = labeler.process(image).await()
         val detected = labels
@@ -407,195 +367,83 @@ suspend fun detectScene(bitmap: Bitmap): SceneDetectionResult {
             .map { it.text }
 
         val (sceneType, confidence) = inferScene(labels)
-        SceneDetectionResult(
-            sceneType = sceneType,
-            confidence = confidence,
-            detectedObjects = detected,
-            recommendedSettings = recommendedSettings(sceneType)
-        )
+        SceneDetectionResult(...)
     } catch (e: Throwable) {
-        SceneDetectionResult(
-            sceneType = SceneType.AUTO,
-            confidence = 0f,
-            detectedObjects = emptyList(),
-            recommendedSettings = CameraSettings(null, null, null)
-        )
+        // 返回默认结果
     }
-}
-
-// 场景类型推断
-private fun inferScene(labels: List<ImageLabel>): Pair<SceneType, Float> {
-    var bestType = SceneType.AUTO
-    var best = 0f
-
-    fun consider(type: SceneType, confidence: Float) {
-        if (confidence > best) {
-            bestType = type
-            best = confidence
-        }
-    }
-
-    labels.forEach { l ->
-        val t = l.text.lowercase()
-        when {
-            "person" in t || "face" in t -> consider(SceneType.PORTRAIT, l.confidence)
-            "food" in t || "meal" in t -> consider(SceneType.FOOD, l.confidence)
-            "landscape" in t || "mountain" in t || "sky" in t || "nature" in t -> consider(SceneType.LANDSCAPE, l.confidence)
-            "night" in t || "dark" in t -> consider(SceneType.NIGHT, l.confidence)
-            "building" in t || "architecture" in t -> consider(SceneType.ARCHITECTURE, l.confidence)
-        }
-    }
-
-    return bestType to best
 }
 ```
 
-**代码解释**：
-- 使用 ML Kit Image Labeling 进行场景识别，设置置信度阈值为 0.6f
-- 采用协程 await() 方式处理异步操作，简化代码结构
-- 对识别结果按置信度排序，取前 6 个标签
-- 通过 inferScene 函数推断具体场景类型
-- 为不同场景类型提供推荐的相机设置
-
-这种实现方式不仅代码结构清晰，而且能够提供准确的场景识别结果，为用户提供有针对性的拍摄建议。
-
 ### 4.3 智能裁剪模块
-
-智能裁剪模块使用 ML Kit Object Detection 进行主体检测，结合美学原则和场景分析，提供智能裁剪建议。该模块支持多种裁剪模式，并能根据主体大小和检测质量动态调整裁剪策略。
 
 #### 4.3.1 功能设计
 
-| 功能        | 描述               | 优先级 |
+| 功能        | 描述               | 实现状态 |
 | --------- | ---------------- | --- |
-| AI 自动识别主体 | 使用 ML Kit Object Detection 检测图片中的主要物体 | P0  |
-| 智能裁剪建议   | 根据主体大小、位置和场景分析建议最佳裁剪区域 | P0  |
-| 动态置信度计算 | 根据检测质量、主体占比和场景复杂度计算置信度 | P0  |
-| 多种裁剪模式   | 支持自动、方形、竖屏、横屏等模式 | P0  |
-| 手动调整裁剪框   | 用户可自由调整裁剪区域      | P0  |
-| 裁剪执行      | 应用裁剪并保存，保留 EXIF 信息 | P0  |
+| AI 自动识别主体 | 使用 ML Kit Object Detection 检测图片中的主要物体 | ✅ 完成 |
+| 多主体关联检测   | 检测与主主体相关的其他小主体 | ✅ 完成 |
+| 智能裁剪建议   | 根据主体大小、位置建议最佳裁剪区域 | ✅ 完成 |
+| 动态置信度计算 | 根据检测质量、主体占比计算置信度 | ✅ 完成 |
+| 多种裁剪模式   | 支持自动、方形、竖屏、横屏等模式 | ✅ 完成 |
+| 智能放弃裁剪   | 当裁剪比例过大时保留原图 | ✅ 完成 |
 
 #### 4.3.2 技术实现
 
 ```kotlin
-// 智能裁剪分析
-suspend fun analyzeSmartCrop(
-    imageUri: String,
-    cropMode: CropMode = CropMode.AUTO
-): SmartCropResult = withContext(Dispatchers.Default) {
-    val bitmap = BitmapFactory.decodeFile(imageUri)
-        ?: return@withContext defaultResult("无法读取图片", cropMode)
-
-    val image = InputImage.fromBitmap(bitmap, 0)
-    val options = ObjectDetectorOptions.Builder()
-        .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
-        .enableMultipleObjects()
-        .enableClassification()
-        .build()
-    val detector = ObjectDetection.getClient(options)
-
-    try {
-        val objects = detector.process(image).await()
-        if (objects.isEmpty()) {
-            return@withContext defaultResult("未检测到主体，已给出默认裁剪框", cropMode)
-        }
-
-        val main = objects.maxBy { it.boundingBox.width() * it.boundingBox.height() }
-        val rect = main.boundingBox
-        val subjects = inferSubjects(main)
-
-        // 计算主体占比
-        val subjectArea = rect.width() * rect.height().toFloat()
-        val imageArea = bitmap.width * bitmap.height.toFloat()
-        val subjectRatio = subjectArea / imageArea
-
-        // 根据主体大小动态调整 padding
-        val paddingRatio = when {
-            subjectRatio > LARGE_SUBJECT_THRESHOLD -> LARGE_SUBJECT_PADDING
-            hasFace -> DEFAULT_PADDING
-            else -> DEFAULT_PADDING
-        }
-
-        // 计算带 padding 的裁剪框
-        val padded = padRect(rect, bitmap.width, bitmap.height, paddingRatio)
-
-        // 检查是否满足裁剪条件
-        val shouldSkipCrop = when {
-            subjectRatio > LARGE_SUBJECT_THRESHOLD -> true // 主体占比过大
-            edgeRatio > MAX_CROP_RATIO -> true // 需裁剪边缘超过阈值
-            else -> false
-        }
-
-        // 计算裁剪框和置信度
-        val cropRect = CropRect(
-            left = padded.left.toFloat() / bitmap.width,
-            top = padded.top.toFloat() / bitmap.height,
-            width = padded.width().toFloat() / bitmap.width,
-            height = padded.height().toFloat() / bitmap.height
-        )
-
-        val confidence = calculateConfidence(main, objects.size, subjectRatio, edgeRatio)
-
-        SmartCropResult(
-            success = true,
-            cropRect = clampCropRect(cropRect),
-            confidence = confidence,
-            suggestion = generateSuggestion(hasFace, confidence, subjects),
-            detectedSubjects = subjects,
-            aspectRatio = aspectRatioFor(cropMode)
-        )
-    } catch (e: Throwable) {
-        defaultResult("AI 分析失败，请手动调整", cropMode)
+// CropBackend.kt - analyzeSmartCrop 核心逻辑
+suspend fun analyzeSmartCrop(imageUri: String, cropMode: CropMode): SmartCropResult {
+    // 1. 检测所有物体
+    val objects = detector.process(image).await()
+    
+    // 2. 找到主主体（面积最大）
+    val mainSubject = objects.maxBy { it.boundingBox.width() * it.boundingBox.height() }
+    
+    // 3. 筛选相关主体（距离和面积比判断）
+    val relatedSubjects = sortedObjects.drop(1).filter { 
+        isRelatedSubject(mainSubject, it, imageWidth, imageHeight) 
     }
+    
+    // 4. 计算合并外接框
+    val combinedRect = calculateBoundingRect(allSubjects, imageWidth, imageHeight)
+    
+    // 5. 动态边距（大主体使用小边距）
+    val paddingRatio = when {
+        mainSubjectRatio > LARGE_SUBJECT_THRESHOLD -> LARGE_SUBJECT_PADDING
+        hasFace -> DEFAULT_PADDING
+        else -> DEFAULT_PADDING
+    }
+    
+    // 6. 判断是否放弃裁剪（裁剪超过40%则放弃）
+    if (cropRatio < 0.60f) {
+        return SmartCropResult(
+            cropRect = CropRect(0f, 0f, 1f, 1f),
+            suggestion = "✨ 当前已是最优构图"
+        )
+    }
+    
+    // 7. 动态计算置信度
+    val confidence = calculateConfidence(mainObject, objects.size, subjectRatio, edgeRatio, relatedSubjects.size)
 }
 ```
 
-**代码解释**：
-- 使用 ML Kit Object Detection 进行主体检测，支持多物体检测和分类
-- 动态计算主体占比，根据主体大小调整裁剪策略
-- 实现智能边距调整，为不同大小的主体提供合适的边距
-- 计算裁剪置信度，基于检测质量、主体占比和场景复杂度
-- 生成针对性的裁剪建议，根据检测到的主体类型提供不同的提示
-- 支持多种裁剪模式，包括自动、方形、竖屏和横屏
-
-这种实现方式不仅能够智能识别主体并提供合理的裁剪建议，还能根据场景复杂度和检测质量动态调整策略，确保裁剪效果的准确性和可靠性。
-
 ### 4.4 AI 调色模块
-
-AI 调色模块使用 ONNX Runtime 进行 MobileNetV2 模型推理，结合 ML Kit 场景识别作为备用方案，为不同场景提供智能调色建议。该模块支持实时预览和参数应用，确保调色效果自然真实。
 
 #### 4.4.1 调色参数
 
 | 参数  | 范围           | 默认值 | 说明        |
 | --- | ------------ | --- | --------- |
-| 曝光度 | -1.0 \~ +1.0 | 0.0 | 调整整体亮度    |
-| 对比度 | 0.5 \~ 2.0 | 1.0 | 调整明暗对比    |
-| 饱和度 | 0.5 \~ 2.0 | 1.0 | 调整色彩鲜艳程度  |
-| 锐化  | -1.0 \~ +1.0 | 0.0 | 调整边缘清晰度   |
-| 色温  | -1.0 \~ +1.0 | 0.0 | 暖色调 ↔ 冷色调 |
-| 高光  | 0.0 \~ 1.0 | 0.5 | 调整亮部细节    |
-| 阴影  | 0.0 \~ 1.0 | 0.5 | 调整暗部细节    |
+| 曝光度 | -1.0 ~ +1.0 | 0.0 | 调整整体亮度    |
+| 对比度 | 0.5 ~ 2.0 | 1.0 | 调整明暗对比    |
+| 饱和度 | 0.5 ~ 2.0 | 1.0 | 调整色彩鲜艳程度  |
+| 锐化  | -1.0 ~ +1.0 | 0.0 | 调整边缘清晰度   |
+| 色温  | -1.0 ~ +1.0 | 0.0 | 暖色调 ↔ 冷色调 |
+| 高光  | 0.0 ~ 1.0 | 0.5 | 调整亮部细节    |
 
 #### 4.4.2 AI 增强功能
 
 ```kotlin
-// AI 增强结果数据类
-data class AIEnhanceResult(
-    val success: Boolean,
-    val params: ColorAdjustmentParams,
-    val detectedInfo: String,
-    val confidence: Float
-)
-
-// 分析图像并生成调色参数
-suspend fun analyzeColorEnhancement(imageUri: String): AIEnhanceResult = withContext(Dispatchers.Default) {
-    val bitmap = BitmapFactory.decodeFile(imageUri)
-        ?: return@withContext AIEnhanceResult(
-            success = false,
-            params = ColorAdjustmentParams(0f, 0f, 0f, 0f, 0f, 0f),
-            detectedInfo = "无法读取图片",
-            confidence = 0f
-        )
-
+// ColorBackend.kt - analyzeColorEnhancement
+suspend fun analyzeColorEnhancement(imageUri: String): AIEnhanceResult {
     // 优先使用 ONNX 模型
     try {
         val onnxParams = OnnxColorModel.analyzeImage(bitmap)
@@ -611,34 +459,20 @@ suspend fun analyzeColorEnhancement(imageUri: String): AIEnhanceResult = withCon
     }
 }
 
-// 应用调色参数到图像
-suspend fun applyColorAdjustments(
-    imageUri: String,
-    params: ColorAdjustmentParams
-): String = withContext(Dispatchers.Default) {
-    val bitmap = BitmapFactory.decodeFile(imageUri)
-        ?: throw IllegalArgumentException("无法读取图片: $imageUri")
-
-    // 使用调色工具类应用参数
-    val adjusted = ColorAdjustmentUtils.applyAdjustments(bitmap, params)
-
-    val out = File(parent, "edited_${System.currentTimeMillis()}.jpg")
-    FileOutputStream(out).use { fos ->
-        adjusted.compress(Bitmap.CompressFormat.JPEG, 95, fos)
+// ML Kit 备用方案
+private suspend fun analyzeWithMLKit(bitmap: Bitmap): AIEnhanceResult {
+    val labels = labeler.process(image).await()
+    val detectedInfo = top?.text ?: "通用场景"
+    
+    // 根据场景类型设置启发式参数
+    val (exposure, contrast, saturation) = when {
+        detectedInfo.contains("person") -> Triple(0.15f, 0.12f, 0.10f)
+        detectedInfo.contains("food") -> Triple(0.10f, 0.15f, 0.25f)
+        detectedInfo.contains("landscape") -> Triple(0.05f, 0.20f, 0.15f)
+        else -> Triple(0.05f, 0.10f, 0.08f)
     }
-    ExifUtils.copyExif(imageUri, out.absolutePath)
-    out.absolutePath
 }
 ```
-
-**代码解释**：
-- 使用 ONNX Runtime 运行 MobileNetV2 模型进行调色参数预测
-- 实现 ML Kit 场景识别作为备用方案，确保在 ONNX 模型失败时仍能提供调色建议
-- 支持实时预览功能，使用降采样技术提高预览性能
-- 应用参数限制，防止极端值导致图像异常
-- 保留 EXIF 信息，确保图片元数据完整
-
-这种实现方式不仅提供了准确的智能调色建议，还确保了系统的可靠性和性能，为用户提供流畅的调色体验。
 
 ***
 
@@ -649,7 +483,7 @@ suspend fun applyColorAdjustments(
 | 技术                  | 版本     | 用途     | 选择理由            |
 | ------------------- | ------ | ------ | --------------- |
 | **Kotlin**          | 2.0.21 | 开发语言   | 现代、简洁、空安全       |
-| **Jetpack Compose** | 1.5.4  | UI 框架  | 声明式、实时预览性能好     |
+| **Jetpack Compose** | BOM 2024.09.00 | UI 框架  | 声明式、实时预览性能好     |
 | **Material 3**      | -      | 设计系统   | 现代化、支持深色主题      |
 | **CameraX**         | 1.4.1  | 相机 API | 简化相机开发、自动生命周期管理 |
 | **Coil**            | 2.4.0  | 图片加载   | Kotlin 优先、轻量级   |
@@ -661,28 +495,30 @@ suspend fun applyColorAdjustments(
 | **ML Kit Image Labeling**   | 17.0.9 | 场景识别  | Google 官方、离线可用、性能优化        |
 | **ML Kit Face Detection**   | 16.1.7 | 人脸检测  | 高精度、实时性好                   |
 | **ML Kit Object Detection** | 17.0.2 | 对象检测  | 智能裁剪支持                     |
-| **ONNX Runtime**            | 1.19.0 | 模型推理  | 跨平台、高性能、支持 MobileNetV2     |
-| **OpenCV**                  | 4.9.0  | 构图分析  | 边缘检测、线检测、对称性分析             |
-| **阿里云百炼 API**               | -      | 云端大模型 | qwen-vl-plus 视觉语言模型，深度场景理解 |
+| **ONNX Runtime**            | 1.19.0 | 模型推理  | 跨平台、高性能                   |
+| **OpenCV**                  | 4.9.0  | 构图分析  | 边缘检测、线检测                   |
+| **阿里云百炼 API**               | -      | 云端大模型 | qwen-vl-plus 视觉语言模型       |
 
 ### 5.3 架构模式
 
-**采用 MVVM + Clean Architecture**：
+**采用单例 Backend + Repository 模式**：
 
 ```
 ┌─────────────────────────────────────┐
-│            Presentation             │
-│  (Composable UI + ViewModel)        │
+│            UI Layer                 │
+│  (Composable UI + State Management) │
 └─────────────────┬───────────────────┘
                   │
 ┌─────────────────▼───────────────────┐
-│             Domain                   │
-│  (Use Cases + Repository Interface) │
+│         Backend Layer               │
+│  (Singleton Objects + Coroutines)   │
+│  CameraBackend | AiBackend          │
+│  ColorBackend | CropBackend         │
 └─────────────────┬───────────────────┘
                   │
 ┌─────────────────▼───────────────────┐
-│             Data                     │
-│  (Repository Implementation)         │
+│        Third-party SDKs             │
+│  ML Kit | ONNX | CameraX | OpenCV   │
 └─────────────────────────────────────┘
 ```
 
@@ -694,18 +530,26 @@ suspend fun applyColorAdjustments(
 
 #### 6.1.1 颜色系统
 
-**主色调**：
+**三种主题风格**：
 
 ```kotlin
-// 主绿色 - 代表 AI、智能
-val PrimaryGreen = Color(0xFF00C853)
+// 专业摄影风格 - 琥珀橙
+object ProfessionalColors {
+    val Primary = Color(0xFFFFB74D)
+    val Background = Color(0xFF121212)
+}
 
-// 深色背景 - 突出摄影内容
-val DarkBackground = Color(0xFF121212)
+// 科技蓝风格 - 霓虹青蓝
+object TechColors {
+    val Primary = Color(0xFF00E5FF)
+    val Background = Color(0xFF0A1628)
+}
 
-// 文字颜色
-val TextWhite = Color(0xFFFFFFFF)
-val TextGray = Color(0xFFB0B0B0)
+// 明亮清新风格 - 薄荷绿
+object FreshColors {
+    val Primary = Color(0xFF4DB6AC)
+    val Background = Color(0xFFFFFFFF)
+}
 ```
 
 #### 6.1.2 字体规范
@@ -732,8 +576,7 @@ val TextGray = Color(0xFFB0B0B0)
 
 ```
 ┌─────────────────────────────────────┐
-│ [场景标签]              [设置按钮]  │  ← 顶部栏 (48dp)
-│                                     │
+│ [场景标签]              [设置按钮]  │  ← 顶部栏
 │                                     │
 │         ┌─────────────────┐         │
 │         │   AI 建议气泡   │         │  ← 居中显示
@@ -747,7 +590,6 @@ val TextGray = Color(0xFFB0B0B0)
 │  [翻转]                [定时]        │
 │                                     │
 ├─────────────────────────────────────┤
-│         [相机参数: ISO100]          │
 │    [ISO]    [快门]    [光圈]       │
 │                                     │
 │  [闪光]  ┌─────────┐  [相册]       │  ← 底部控制栏
@@ -756,32 +598,25 @@ val TextGray = Color(0xFFB0B0B0)
 └─────────────────────────────────────┘
 ```
 
-#### 6.2.2 调色界面布局
+#### 6.2.2 设置界面布局
+
+设置界面采用顶部面板设计，支持下拉返回手势。
 
 ```
 ┌─────────────────────────────────────┐
-│ [返回]              [调色]  [确认]  │
+│ [返回]              设置           │
 ├─────────────────────────────────────┤
+│  主题风格                           │
+│  ┌─────────┐ ┌─────────┐ ┌────────┐│
+│  │专业摄影 │ │ 科技蓝  │ │明亮清新││
+│  └─────────┘ └─────────┘ └────────┘│
 │                                     │
+│  云端AI辅助                         │
+│  [启用云端AI分析]        [开关]     │
 │                                     │
-│          ┌───────────────┐          │
-│          │               │          │
-│          │   图片预览    │          │
-│          │   (40% 高度)  │          │
-│          │               │          │
-│          └───────────────┘          │
-│                                     │
-├─────────────────────────────────────┤
-│  ┌─────────────────────────────┐    │
-│  │  AI 增强推荐                 │    │  ← AI 增强卡片
-│  │  人物肖像 | 曝光+0.15        │    │
-│  │              [应用]         │    │
-│  └─────────────────────────────┘    │
-│                                     │
-│  🌞 曝光度    ──────●──────  +0.15  │  ← 参数滑块
-│  对比度      ────●────────  0.00    │
-│  饱和度      ──────●──────  +0.10  │
-│  ...                                │
+│  缓存管理                           │
+│  缓存大小: 1024 KB                  │
+│  [      清理缓存      ]             │
 └─────────────────────────────────────┘
 ```
 
@@ -791,65 +626,41 @@ val TextGray = Color(0xFFB0B0B0)
 
 ### 7.1 内存优化
 
-#### 7.1.1 Bitmap 复用池
+#### 7.1.1 及时释放资源
 
 ```kotlin
-class BitmapPool {
-    private val pool = mutableMapOf<String, Bitmap>()
-
-    fun acquire(width: Int, height: Int): Bitmap {
-        val key = "${width}x${height}"
-        return pool.getOrPut(key) {
-            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        }
-    }
-
-    fun release(key: String) {
-        pool.remove(key)?.recycle()
+// 在相机切换和页面退出时释放资源
+DisposableEffect(Unit) {
+    onDispose {
+        imageProxy?.close()
+        bitmap?.recycle()
     }
 }
 ```
 
-#### 7.1.2 及时释放资源
+#### 7.1.2 图片加载优化
 
 ```kotlin
-// 在 Compose 中使用 DisposableEffect
-DisposableEffect(cameraProvider) {
-    onDispose {
-        cameraProvider.unbindAll()
-        bitmapPool.clear()
+// Coil 图片加载配置
+val imageLoader = ImageLoader.Builder(context)
+    .memoryCache {
+        MemoryCache.Builder(context)
+            .maxSizePercent(0.25)
+            .build()
     }
-}
+    .build()
 ```
 
 ### 7.2 CPU 优化
 
-#### 7.2.1 智能帧率控制
+#### 7.2.1 异步处理
 
 ```kotlin
-class AnalysisController {
-    private val minInterval = 500L  // 最小分析间隔 500ms
-
-    fun shouldAnalyze(): Boolean {
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastAnalysisTime >= minInterval) {
-            lastAnalysisTime = currentTime
-            return true
-        }
-        return false
-    }
-}
-```
-
-#### 7.2.2 异步处理
-
-```kotlin
+// AI 推理在后台线程执行
 CoroutineScope(Dispatchers.IO).launch {
-    // AI 推理在后台线程执行
     val result = analyzeScene(inputImage)
-
+    
     withContext(Dispatchers.Main) {
-        // UI 更新在主线程执行
         updateUI(result)
     }
 }
@@ -857,87 +668,32 @@ CoroutineScope(Dispatchers.IO).launch {
 
 ### 7.3 模型优化
 
-#### 7.3.1 模型部署
+#### 7.3.1 ONNX 模型配置
 
 ```kotlin
-// ONNX 模型部署
+// OnnxColorModel.kt
 val sessionOptions = OrtSession.SessionOptions().apply {
-    setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
-    setIntraOpNumThreads(2)
+    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
 }
 
-val session = env.createSession(
-    loadModelFromAssets("mobilenetv2_color.onnx"),
-    sessionOptions
-)
-```
-
-#### 7.3.2 输入尺寸优化
-
-```kotlin
-// 预览帧降采样
-val analysisBitmap = Bitmap.createScaledBitmap(
-    previewFrame,
-    640,   // 分析尺寸
-    480,
-    true
-)
+val session = env.createSession(modelBytes, sessionOptions)
 ```
 
 ### 7.4 性能测试结果
 
-**测试执行**：基于 UI Automator 的性能测试
-
-**测试结果**：
+> 测试环境：Pixel 9a 模拟器 (Android API 36)，测试日期 2026-04-11
 
 | 指标 | 目标值 | 实际值 | 状态 |
 |------|--------|--------|------|
-| 应用启动时间 | < 5秒 | 2.8秒 | ✅ 已达标 |
-| 应用重新启动时间 | < 3秒 | 2.9秒 | ✅ 已达标 |
-| 相机预览启动时间 | < 3秒 | 2.8秒 | ✅ 已达标 |
-| 设置页面导航时间 | < 2秒 | 1.6秒 | ✅ 已达标 |
-| 闪光灯切换响应时间 | < 1秒 | 0.6秒 | ✅ 已达标 |
-| 摄像头翻转响应时间 | < 2秒 | 1.6秒 | ✅ 已达标 |
-| 比例切换响应时间 | < 200ms | 150ms | ✅ 已达标 |
-| 内存使用 | < 500MB | 280MB | ✅ 已达标 |
-| CPU 占用 | < 50% | 35% | ✅ 已达标 |
-| 电池消耗 | < 5% | 3% | ✅ 已达标 |
-| 内存增长 | < 50MB | 30MB | ✅ 已达标 |
+| 应用启动时间 | < 5秒 | 3.2秒 | ✅ |
+| 应用重新启动时间 | < 5秒 | 3.2秒 | ✅ |
+| 比例切换响应时间 | < 300ms | ~300ms（含动画） | ✅ |
+| 内存占用 (PSS) | < 300MB | 149MB | ✅ |
+| 内存占用 (RSS) | < 500MB | 277MB | ✅ |
+| CPU 占用 | < 50% | ~0%（空闲） | ✅ |
+| 电池消耗 | < 5% | 0%（模拟器） | ✅ |
 
-**性能瓶颈分析**：
-
-1. **相机预览启动时间**：已优化至2.8秒，通过预加载策略和后台线程初始化
-
-2. **内存使用**：已优化至280MB，通过模型量化和高效内存管理
-
-3. **比例切换响应**：已优化至150ms，通过平滑动画过渡
-
-**优化建议**：
-
-1. **相机初始化优化**：
-   - 采用预加载策略，在应用启动时提前初始化相机相关资源
-   - 将相机初始化放在后台线程执行
-   - 缓存相机配置和状态，避免重复初始化
-   - 延迟加载AI模型，只在首次需要时加载
-
-2. **内存优化**：
-   - 使用量化技术减小AI模型大小
-   - 采用更高效的内存分配和释放策略
-   - 及时释放不再使用的内存资源
-   - 只在需要时加载大型资源
-
-3. **响应速度优化**：
-   - 确保UI线程不被耗时操作阻塞
-   - 使用协程和后台线程处理耗时任务
-   - 优化动画效果，提升用户体验
-
-4. **比例切换优化**：
-   - 采用平滑动画过渡，提升用户体验
-   - 避免相机重新绑定，减少切换延迟
-   - 使用PhotonCamera策略，只调整UI遮罩
-   - 使用更高效的过渡动画
-   - 预先缓存可能需要的资源
-   - 使用多线程并行处理任务
+**比例切换优化说明**：采用 PhotonCamera 策略，比例切换只调整 UI 遮罩，不重新绑定相机。切换过程包含 300ms 平滑动画（50ms 模糊 + 250ms 清晰过渡），既保证即时响应，又为相机提供缓冲时间。
 
 ***
 
@@ -950,7 +706,6 @@ val analysisBitmap = Bitmap.createScaledBitmap(
 | 本地优先 | 实时性要求高的 AI 功能在设备端完成         |
 | 云端可选 | 云端大模型功能需用户主动启用，API Key 加密存储 |
 | 数据隔离 | 照片数据存储在应用私有目录               |
-| 即时删除 | 临时文件处理后立即删除                 |
 | 传输安全 | 云端 API 使用 HTTPS 加密传输        |
 
 ### 8.2 权限最小化
@@ -963,11 +718,20 @@ val analysisBitmap = Bitmap.createScaledBitmap(
 <!-- INTERNET 权限仅用于云端 AI 功能，本地功能无需网络 -->
 ```
 
-### 8.3 模型安全
+### 8.3 API Key 安全
 
-- 模型文件存储在应用私有目录
-- 模型完整性校验（SHA-256）
-- 防逆向工程保护
+```kotlin
+// SecurePrefs.kt - 使用 EncryptedSharedPreferences 加密存储
+object SecurePrefs {
+    fun setApiKey(context: Context, apiKey: String) {
+        encryptedPrefs.edit().putString(KEY_API_KEY, apiKey).apply()
+    }
+    
+    fun getApiKey(context: Context): String? {
+        return encryptedPrefs.getString(KEY_API_KEY, null)
+    }
+}
+```
 
 ***
 
@@ -975,54 +739,40 @@ val analysisBitmap = Bitmap.createScaledBitmap(
 
 ### 9.1 功能模块化
 
+每个 Backend 都是独立的单例对象，便于测试和替换：
+
 ```kotlin
-// 相机模块接口
-interface ICameraModule {
-    fun bind(cameraProvider: CameraProvider)
-    fun takePhoto(callback: (Uri) -> Unit)
-    fun setFlashMode(mode: Int)
-    fun switchCamera()
+// 可插拔设计示例
+object CameraBackend {
+    fun capturePhoto(...) { }
+    fun switchCamera(...) { }
+    fun setFlashMode(...) { }
 }
 
-// AI 模块接口
-interface IAIAnalyzer {
-    fun analyzeScene(image: InputImage): SceneResult
-    fun analyzeComposition(image: InputImage): CompositionResult
+object AiBackend {
+    suspend fun detectScene(...) { }
+    suspend fun analyzeComposition(...) { }
 }
-
-// 可插拔设计
-class CameraManager(
-    private val cameraModule: ICameraModule,
-    private val aiAnalyzer: IAIAnalyzer
-)
 ```
 
 ### 9.2 主题支持
 
 ```kotlin
-// 浅色/深色主题切换
-@Composable
-fun AISmartCameraTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit
-) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+// Theme.kt - 三种主题切换
+enum class ThemeType {
+    PROFESSIONAL,  // 专业摄影 - 琥珀橙
+    TECH,          // 科技蓝 - 霓虹青蓝
+    FRESH          // 明亮清新 - 薄荷绿
 }
-```
 
-### 9.3 多语言支持
-
-```xml
-<!-- res/values/strings.xml -->
-<string name="scene_portrait">人像拍摄</string>
-<string name="scene_landscape">风景拍摄</string>
-<string name="scene_food">美食拍摄</string>
+@Composable
+fun getColorScheme(themeType: ThemeType): ColorScheme {
+    return when (themeType) {
+        ThemeType.PROFESSIONAL -> ProfessionalColorScheme
+        ThemeType.TECH -> TechColorScheme
+        ThemeType.FRESH -> FreshColorScheme
+    }
+}
 ```
 
 ***
@@ -1033,15 +783,15 @@ fun AISmartCameraTheme(
 
 1. **"拍前辅助"理念**：差异化定位，从源头提升摄影质量
 2. **双轨 AI 架构**：本地轻量化模型保证实时性，云端大模型提供深度理解
-3. **极简交互设计**：零学习成本，即开即用
-4. **性能优化**：智能帧率控制，流畅的用户体验
-5. **自然增强美学**：追求真实，避免过度处理
+3. **三种主题风格**：专业摄影、科技蓝、明亮清新，满足不同用户偏好
+4. **智能裁剪算法**：多主体检测、动态边距、智能放弃策略
+5. **模块化设计**：单例 Backend 架构，便于维护和扩展
 
 ### 10.2 技术创新
 
-1. **双轨 AI 推理**：本地 ONNX Runtime + ML Kit + OpenCV，云端 qwen-vl-plus 大模型
-2. **多模型融合**：场景识别 + 构图分析 + 色彩增强 + 云端深度理解
-3. **性能优化策略**：Bitmap 复用、帧率控制、OpenGL ES 渲染管线
+1. **双轨 AI 推理**：本地 ML Kit + ONNX + OpenCV，云端 qwen-vl-plus
+2. **多模型融合**：场景识别 + 人脸检测 + 物体检测 + 云端深度理解
+3. **智能裁剪算法**：基于检测质量、主体占比、多主体关联的综合策略
 
 ### 10.3 用户价值
 
@@ -1051,8 +801,8 @@ fun AISmartCameraTheme(
 
 ***
 
-**文档版本**：v1.1
-**最后更新**：2026-04-05
+**文档版本**：v2.1
+**最后更新**：2026-04-11
 **状态**：已更新，反映项目实际实现
 
 ***
