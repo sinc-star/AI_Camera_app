@@ -30,6 +30,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import coil.compose.rememberAsyncImagePainter
 import com.aicamera.app.ui.theme.*
 
@@ -625,6 +628,8 @@ fun CaptureButton(
                 .clip(CircleShape)
                 .background(Color.White)
                 .clickable(onClick = onClick)
+                .testTag("captureButton")
+                .semantics { contentDescription = "拍照" }
         )
     }
 }
