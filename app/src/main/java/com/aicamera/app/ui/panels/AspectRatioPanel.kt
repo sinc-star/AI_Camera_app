@@ -1,5 +1,6 @@
 package com.aicamera.app.ui.panels
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,8 +23,6 @@ import androidx.compose.ui.unit.sp
 import com.aicamera.app.backend.camera.CameraBackend
 import com.aicamera.app.ui.theme.ThemeType
 import com.aicamera.app.ui.theme.getColorScheme
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 
 /**
  * ============================================
@@ -40,13 +39,15 @@ fun AspectRatioPanel(
         mutableStateOf(CameraBackend.ManualSettings.previewAspectRatioPortrait)
     }
 
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            val backendRatio = CameraBackend.ManualSettings.previewAspectRatioPortrait
-            if (backendRatio != selectedRatio) {
-                selectedRatio = backendRatio
-            }
-            delay(100)
+    // 使用 derivedStateOf 监听比例变化，替代轮询
+    val currentBackendRatio by remember {
+        derivedStateOf { CameraBackend.ManualSettings.previewAspectRatioPortrait }
+    }
+
+    // 当后端比例变化时更新本地状态
+    LaunchedEffect(currentBackendRatio) {
+        if (currentBackendRatio != selectedRatio) {
+            selectedRatio = currentBackendRatio
         }
     }
 
@@ -140,6 +141,7 @@ fun AspectRatioPanel(
                                     isSelected = selectedRatio == option.ratioValue,
                                     onSelect = {
                                         selectedRatio = option.ratioValue
+                                        // 直接更新后端设置，避免协程问题
                                         CameraBackend.ManualSettings.previewAspectRatioPortrait = option.ratioValue
                                     },
                                     modifier = Modifier.weight(1f),
@@ -240,14 +242,21 @@ private fun AspectRatioButton(
             color = if (isSelected) Color.White.copy(alpha = 0.8f) else colorScheme.onSurfaceVariant
         )
 
-        if (isSelected) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "已选择",
-                tint = colorScheme.primary,
-                modifier = Modifier.size(16.dp)
-            )
+        // 添加选择动画
+        AnimatedVisibility(
+            visible = isSelected,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(4.dp))
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "已选择",
+                    tint = colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }

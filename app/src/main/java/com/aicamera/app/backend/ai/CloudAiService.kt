@@ -13,15 +13,16 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 object CloudAiService {
     private const val TAG = "CloudAiService"
-    private const val API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-    private const val MODEL_NAME = "qwen-vl-plus"
     private const val PREFS_NAME = "cloud_ai_prefs"
     private const val KEY_API_KEY = "api_key"
+    private const val KEY_MODEL_PROVIDER = "model_provider"
 
     private var cachedApiKey: String? = null
+    private var cachedModelProvider: AiModelProvider? = null
 
     fun setApiKey(context: Context, apiKey: String) {
         val encryptedPrefs = SecurePrefs.getEncryptedPrefs(context)
@@ -34,6 +35,20 @@ object CloudAiService {
         val encryptedPrefs = SecurePrefs.getEncryptedPrefs(context)
         cachedApiKey = encryptedPrefs.getString(KEY_API_KEY, null)
         return cachedApiKey
+    }
+
+    fun setModelProvider(context: Context, provider: AiModelProvider) {
+        val encryptedPrefs = SecurePrefs.getEncryptedPrefs(context)
+        encryptedPrefs.edit().putString(KEY_MODEL_PROVIDER, provider.name).apply()
+        cachedModelProvider = provider
+    }
+
+    fun getModelProvider(context: Context): AiModelProvider {
+        if (cachedModelProvider != null) return cachedModelProvider!!
+        val encryptedPrefs = SecurePrefs.getEncryptedPrefs(context)
+        val providerName = encryptedPrefs.getString(KEY_MODEL_PROVIDER, AiModelProvider.ALIBABA_QWEN.name)
+        cachedModelProvider = AiModelProvider.fromName(providerName ?: AiModelProvider.ALIBABA_QWEN.name)
+        return cachedModelProvider!!
     }
 
     fun hasApiKey(context: Context): Boolean {
@@ -62,7 +77,8 @@ object CloudAiService {
             )
         }
 
-        Log.d(TAG, "[云端 AI] 开始分析场景，模型：$MODEL_NAME")
+        val provider = getModelProvider(context)
+        Log.d(TAG, "[云端 AI] 开始分析场景，模型：${provider.displayName} (${provider.modelName})")
         Log.d(TAG, "[云端 AI] 检测到物体：${detectedObjects.joinToString(", ")}")
         Log.d(TAG, "[云端 AI] 当前设置：ISO=${currentSettings.iso ?: "自动"}, 快门=${currentSettings.shutterSpeed ?: "自动"}, EV=${currentSettings.ev ?: "自动"}")
 
@@ -71,8 +87,13 @@ object CloudAiService {
             val prompt = buildPrompt(detectedObjects, currentSettings)
             
             Log.d(TAG, "[云端 AI] 正在调用 API...")
-            val response = callApi(apiKey, prompt, base64Image)
-            val result = parseResponse(response)
+            val response = when (provider) {
+                AiModelProvider.ALIBABA_QWEN -> callOpenAICompatibleApi(provider, apiKey, prompt, base64Image)
+                AiModelProvider.ZHIPU_GLM -> callOpenAICompatibleApi(provider, apiKey, prompt, base64Image)
+                AiModelProvider.BAIDU_ERNIE -> callBaiduErnieApi(provider, apiKey, prompt, base64Image)
+                AiModelProvider.MOONSHOT -> callOpenAICompatibleApi(provider, apiKey, prompt, base64Image)
+            }
+            val result = parseResponse(response, provider)
             
             if (result.success) {
                 Log.i(TAG, "[云端 AI] 分析成功，建议：${result.suggestions.joinToString(", ")}")
@@ -168,8 +189,13 @@ $objectsStr
         """.trimIndent()
     }
 
-    private fun callApi(apiKey: String, prompt: String, base64Image: String): String {
-        val url = URL(API_URL)
+    private fun callOpenAICompatibleApi(
+        provider: AiModelProvider,
+        apiKey: String,
+        prompt: String,
+        base64Image: String
+    ): String {
+        val url = URL(provider.apiUrl)
         val connection = url.openConnection() as HttpURLConnection
         
         try {
@@ -181,7 +207,7 @@ $objectsStr
             connection.readTimeout = 60000
 
             val requestBody = JSONObject().apply {
-                put("model", MODEL_NAME)
+                put("model", provider.modelName)
                 put("messages", JSONArray().apply {
                     put(JSONObject().apply {
                         put("role", "user")
@@ -219,22 +245,79 @@ $objectsStr
         }
     }
 
-    private fun parseResponse(response: String): CloudAiResult {
-        val json = JSONObject(response)
-        val choices = json.optJSONArray("choices")
+    private fun callBaiduErnieApi(
+        provider: AiModelProvider,
+        apiKey: String,
+        prompt: String,
+        base64Image: String
+    ): String {
+        val url = URL("${provider.apiUrl}?access_token=$apiKey")
+        val connection = url.openConnection() as HttpURLConnection
         
-        if (choices == null || choices.length() == 0) {
-            return CloudAiResult(
-                success = false,
-                suggestions = emptyList(),
-                errorMessage = "API 返回数据格式错误"
-            )
-        }
+        try {
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+            connection.connectTimeout = 30000
+            connection.readTimeout = 60000
 
-        val content = choices.getJSONObject(0)
-            .getJSONObject("message")
-            .optString("content", "")
-            .trim()
+            val requestBody = JSONObject().apply {
+                put("messages", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("type", "text")
+                                put("text", prompt)
+                            })
+                            put(JSONObject().apply {
+                                put("type", "image")
+                                put("image", base64Image)
+                            })
+                        })
+                    })
+                })
+            }
+
+            OutputStreamWriter(connection.outputStream).use { writer ->
+                writer.write(requestBody.toString())
+                writer.flush()
+            }
+
+            val responseCode = connection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                val errorStream = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                throw Exception("API 请求失败 ($responseCode): $errorStream")
+            }
+
+            return connection.inputStream.bufferedReader().readText()
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun parseResponse(response: String, provider: AiModelProvider): CloudAiResult {
+        val json = JSONObject(response)
+        
+        val content = when (provider) {
+            AiModelProvider.BAIDU_ERNIE -> {
+                json.optString("result", "").trim()
+            }
+            else -> {
+                val choices = json.optJSONArray("choices")
+                if (choices == null || choices.length() == 0) {
+                    return CloudAiResult(
+                        success = false,
+                        suggestions = emptyList(),
+                        errorMessage = "API 返回数据格式错误"
+                    )
+                }
+                choices.getJSONObject(0)
+                    .getJSONObject("message")
+                    .optString("content", "")
+                    .trim()
+            }
+        }
 
         if (content.isBlank()) {
             return CloudAiResult(
