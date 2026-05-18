@@ -599,6 +599,8 @@ private fun CameraScreenContent(
 
     // AI处理互斥锁，避免多个协程同时抓取bitmap
     var isAiProcessing by remember { mutableStateOf(false) }
+    // 共享bitmap缓存 — 单生产者每1.5s在后台线程抓取一次，三个分析消费者复用同一帧
+    var cachedAnalysisBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     // 事件驱动比例切换 — SharedFlow 立即响应，消除 200ms 轮询延迟
     // 采用PhotonCamera策略：比例切换只调整UI遮罩，不重新绑定相机
@@ -710,13 +712,34 @@ private fun CameraScreenContent(
         }
     }
 
-    // 场景识别 — 使用降采样bitmap + AI处理锁，避免多协程争抢
+    // 共享bitmap生产者 — 每1.5s在后台线程抓取一帧，三个分析消费者复用
+    LaunchedEffect(showGuides) {
+        if (!showGuides) {
+            if (!isAiProcessing) {
+                cachedAnalysisBitmap?.recycle()
+                cachedAnalysisBitmap = null
+            }
+            return@LaunchedEffect
+        }
+        while (isActive) {
+            kotlinx.coroutines.delay(1500)
+            if (isAiProcessing) continue
+            val oldBitmap = cachedAnalysisBitmap
+            val newBitmap = withContext(Dispatchers.Default) {
+                previewView.captureScaledBitmap()
+            }
+            if (newBitmap != null) {
+                cachedAnalysisBitmap = newBitmap
+                oldBitmap?.recycle()
+            }
+        }
+    }
+
+    // 场景识别 — 消费共享bitmap缓存，不再独立抓取
     LaunchedEffect(Unit) {
         while (isActive) {
             if (!isAiProcessing) {
-                val e1 = PerformanceTracer.traceStart("captureScaledBitmap", 0, "for=SceneDetection")
-                val bitmap = previewView.captureScaledBitmap()
-                PerformanceTracer.traceEnd(e1, "size=${bitmap?.width}x${bitmap?.height}")
+                val bitmap = cachedAnalysisBitmap
                 if (bitmap != null) {
                     isAiProcessing = true
                     try {
@@ -735,7 +758,6 @@ private fun CameraScreenContent(
                             detectedObjects = result.detectedObjects
                         }
                     } finally {
-                        bitmap.recycle()
                         isAiProcessing = false
                     }
                 }
@@ -743,8 +765,8 @@ private fun CameraScreenContent(
             kotlinx.coroutines.delay(1500)
         }
     }
-    
-    // 云端AI分析（低频调用） — 使用降采样bitmap + AI处理锁
+
+    // 云端AI分析（低频调用） — 消费共享bitmap缓存
     LaunchedEffect(showGuides, cloudAiEnabled) {
         if (!showGuides || !cloudAiEnabled) return@LaunchedEffect
         while (isActive) {
@@ -755,7 +777,7 @@ private fun CameraScreenContent(
             }
             kotlinx.coroutines.delay(10000)
             if (isAiProcessing) continue
-            val bitmap = previewView.captureScaledBitmap() ?: continue
+            val bitmap = cachedAnalysisBitmap ?: continue
             isAiProcessing = true
             try {
                 val settings = CameraSettingsInfo(
@@ -795,13 +817,12 @@ private fun CameraScreenContent(
                     }
                 }
             } finally {
-                bitmap.recycle()
                 isAiProcessing = false
             }
         }
     }
 
-    // 构图分析（本地AI兜底） — 使用降采样bitmap + AI处理锁
+    // 构图分析（本地AI兜底） — 消费共享bitmap缓存
     LaunchedEffect(showGuides) {
         if (!showGuides) return@LaunchedEffect
         while (isActive) {
@@ -812,7 +833,7 @@ private fun CameraScreenContent(
                 continue
             }
 
-            val bitmap = previewView.captureScaledBitmap() ?: continue
+            val bitmap = cachedAnalysisBitmap ?: continue
             isAiProcessing = true
             try {
                 val st = when (sceneType) {
@@ -847,7 +868,6 @@ private fun CameraScreenContent(
                     }
                 }
             } finally {
-                bitmap.recycle()
                 isAiProcessing = false
             }
         }
