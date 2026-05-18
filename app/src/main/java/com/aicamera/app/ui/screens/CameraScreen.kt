@@ -721,8 +721,12 @@ private fun CameraScreenContent(
             }
             return@LaunchedEffect
         }
+        var isFirstCapture = true
         while (isActive) {
-            kotlinx.coroutines.delay(1500)
+            if (!isFirstCapture) {
+                kotlinx.coroutines.delay(1500)
+            }
+            isFirstCapture = false
             if (isAiProcessing) continue
             val oldBitmap = cachedAnalysisBitmap
             val newBitmap = withContext(Dispatchers.Default) {
@@ -736,11 +740,18 @@ private fun CameraScreenContent(
     }
 
     // 场景识别 — 消费共享bitmap缓存，不再独立抓取
-    LaunchedEffect(Unit) {
+    LaunchedEffect(showGuides) {
+        if (!showGuides) return@LaunchedEffect
+        var warmUpRetries = 3
         while (isActive) {
+            if (warmUpRetries <= 0) {
+                kotlinx.coroutines.delay(1500)
+            }
+
             if (!isAiProcessing) {
                 val bitmap = cachedAnalysisBitmap
                 if (bitmap != null) {
+                    warmUpRetries = 0
                     isAiProcessing = true
                     try {
                         val e2 = PerformanceTracer.traceStart("AiBackend.detectScene", 0)
@@ -760,9 +771,14 @@ private fun CameraScreenContent(
                     } finally {
                         isAiProcessing = false
                     }
+                } else if (warmUpRetries > 0) {
+                    warmUpRetries--
+                    kotlinx.coroutines.delay(200)
                 }
+            } else if (warmUpRetries > 0) {
+                warmUpRetries--
+                kotlinx.coroutines.delay(200)
             }
-            kotlinx.coroutines.delay(1500)
         }
     }
 
@@ -825,15 +841,33 @@ private fun CameraScreenContent(
     // 构图分析（本地AI兜底） — 消费共享bitmap缓存
     LaunchedEffect(showGuides) {
         if (!showGuides) return@LaunchedEffect
+        var warmUpRetries = 3 // 冷启动时最多重试3次等待首帧bitmap就绪
         while (isActive) {
-            kotlinx.coroutines.delay(4000)
+            if (warmUpRetries <= 0) {
+                kotlinx.coroutines.delay(4000)
+            }
 
             // 云端建议正在处理或已显示时，跳过本地建议
-            if (cloudAiTipPending || currentTipSource == TipSource.CLOUD || isAiProcessing) {
+            if (cloudAiTipPending || currentTipSource == TipSource.CLOUD) {
                 continue
             }
 
-            val bitmap = cachedAnalysisBitmap ?: continue
+            // 场景识别正在运行时短暂等待，避免跳过整个4s周期
+            if (isAiProcessing) {
+                kotlinx.coroutines.delay(500)
+                continue
+            }
+
+            val bitmap = cachedAnalysisBitmap
+            if (bitmap == null) {
+                // 冷启动时bitmap尚未就绪，短暂等待后重试
+                if (warmUpRetries > 0) {
+                    warmUpRetries--
+                    kotlinx.coroutines.delay(300)
+                }
+                continue
+            }
+            warmUpRetries = 0 // 首帧就绪，后续按正常4s间隔
             isAiProcessing = true
             try {
                 val st = when (sceneType) {
