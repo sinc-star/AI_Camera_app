@@ -41,7 +41,7 @@ object DiagnosticsBackend {
         "http://192.168.31.100:8765/diagnostics", // 小米路由器常见 IP
         "http://192.168.50.100:8765/diagnostics"  // 其他常见 IP
     )
-    private const val NETWORK_ENABLED = true
+    private const val NETWORK_ENABLED = false
     // ─────────────────────────────────────────────────────────────────────────
 
     /** 一次诊断快照 */

@@ -27,6 +27,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import com.aicamera.app.backend.diagnostics.PerformanceTracer
 import java.io.File
 import java.io.FileOutputStream
@@ -58,6 +62,12 @@ object CameraBackend {
     }
     
     object ManualSettings {
+        private val _aspectRatioFlow = MutableSharedFlow<Float>(
+            extraBufferCapacity = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST
+        )
+        val aspectRatioFlow: SharedFlow<Float> = _aspectRatioFlow.asSharedFlow()
+
         var iso: Int? = null
             set(value) {
                 field = value
@@ -87,6 +97,7 @@ object CameraBackend {
                 field = value
                 incrementVersion()
                 notifyChanged()
+                _aspectRatioFlow.tryEmit(value)
             }
         private var version: Int = 0
 

@@ -77,6 +77,8 @@ import com.aicamera.app.ui.theme.*
 import com.aicamera.app.ui.theme.getColorScheme
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -94,10 +96,13 @@ import com.aicamera.app.backend.gallery.GalleryBackend
 import com.aicamera.app.backend.gallery.rememberLastPhotoUri
 import com.aicamera.app.backend.models.SceneType
 import com.aicamera.app.backend.diagnostics.DiagnosticsBackend
+import com.aicamera.app.backend.diagnostics.PerformanceTracer
 import com.aicamera.app.backend.models.FlashMode
 import com.aicamera.app.ui.panels.ParamSettingsPanel
 // 已移除 AspectRatioPanel 导入
+import android.graphics.Bitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -448,6 +453,22 @@ data class ViewfinderBounds(
     }
 }
 
+// 从 PreviewView 捕获降采样 bitmap，减少内存压力和处理时间
+private fun PreviewView.captureScaledBitmap(maxEdge: Int = 480): Bitmap? {
+    val original = this.bitmap ?: return null
+    val width = original.width
+    val height = original.height
+    val maxDimension = maxOf(width, height)
+    if (maxDimension <= maxEdge) return original
+    val scale = maxEdge.toFloat() / maxDimension
+    return Bitmap.createScaledBitmap(
+        original,
+        (width * scale).toInt(),
+        (height * scale).toInt(),
+        true
+    ).also { original.recycle() }
+}
+
 @Composable
 private fun CameraScreenContent(
     themeType: ThemeType,
@@ -564,156 +585,166 @@ private fun CameraScreenContent(
     // 相机切换动画状态
     var isCameraSwitching by remember { mutableStateOf(false) }
     
-    // 动画状态管理
+    // 动画状态管理 - 使用 Animatable 替代手动 while+delay(16) 循环，避免阻塞协程
     var transitionState by remember { mutableStateOf(TransitionState.IDLE) }
-    var blurProgress by remember { mutableStateOf(0f) }
-    var boundsProgress by remember { mutableStateOf(0f) }
+    val blurAnimatable = remember { Animatable(0f) }
+    val boundsAnimatable = remember { Animatable(0f) }
     var startBounds by remember { mutableStateOf(ViewfinderBounds.ZERO) }
     var targetBounds by remember { mutableStateOf(ViewfinderBounds.ZERO) }
     var startRatio by remember { mutableStateOf(0.75f) }
     var targetRatio by remember { mutableStateOf(0.75f) }
+    // 用于焦点环反馈的位置
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    val focusRingAnimatable = remember { Animatable(0f) }
 
-    // 轮询比例变化，实时更新 viewfinderBounds
+    // AI处理互斥锁，避免多个协程同时抓取bitmap
+    var isAiProcessing by remember { mutableStateOf(false) }
+
+    // 事件驱动比例切换 — SharedFlow 立即响应，消除 200ms 轮询延迟
     // 采用PhotonCamera策略：比例切换只调整UI遮罩，不重新绑定相机
+    // 使用 Animatable API 替代手动动画循环，由 Compose 帧调度器驱动动画
     LaunchedEffect(Unit) {
-        while (isActive) {
-            val newRatio = CameraBackend.ManualSettings.previewAspectRatioPortrait
+        CameraBackend.ManualSettings.aspectRatioFlow.collect { newRatio ->
             if (newRatio != previewAspectRatio) {
                 val startTime = System.currentTimeMillis()
                 Log.d("CameraScreen", "[比例切换] 开始: $previewAspectRatio -> $newRatio (仅UI调整)")
-                
+
                 // 记录初始状态
                 startRatio = previewAspectRatio
                 targetRatio = newRatio
                 startBounds = viewfinderBounds
-                
+
                 // 计算目标边界
+                val eResInfo = PerformanceTracer.traceStart("resolutionInfo", 0, "step=targetBounds")
+                val cwTarget = previewUseCase?.resolutionInfo?.resolution?.width ?: 0
+                val chTarget = previewUseCase?.resolutionInfo?.resolution?.height ?: 0
+                PerformanceTracer.traceEnd(eResInfo, "w=$cwTarget,h=$chTarget")
+
+                val e1 = PerformanceTracer.traceStart("computeTargetBounds", 0, "ratio=$newRatio")
                 lastScreenInfo?.let { info ->
-                    val cameraOutputWidth = previewUseCase?.resolutionInfo?.resolution?.width ?: 0
-                    val cameraOutputHeight = previewUseCase?.resolutionInfo?.resolution?.height ?: 0
                     targetBounds = computeViewfinderBounds(
                         info.left, info.top, info.width, info.height,
-                        newRatio, 0f,
-                        cameraOutputWidth, cameraOutputHeight,
-                        displayRotation
+                        newRatio, 0f, cwTarget, chTarget, displayRotation
                     )
                 }
-                
-                // 触发动画
+                PerformanceTracer.traceEnd(e1, "bounds=${targetBounds.width.toInt()}x${targetBounds.height.toInt()}")
+
+                // 触发动画 — 使用 Animatable，Compose 帧调度器驱动，不阻塞协程线程
                 transitionState = TransitionState.BLURRING
-                blurProgress = 0f
-                boundsProgress = 0f
-                
-                // 快速模糊阶段（50毫秒）
-                val blurStartTime = System.currentTimeMillis()
-                while (System.currentTimeMillis() - blurStartTime < 50) {
-                    blurProgress = minOf(1f, (System.currentTimeMillis() - blurStartTime) / 50f)
-                    kotlinx.coroutines.delay(16) // 约60fps
-                }
-                blurProgress = 1f
-                
-                // 进入清晰阶段
+                blurAnimatable.snapTo(0f)
+                boundsAnimatable.snapTo(0f)
+
+                // 阶段1: 快速模糊（50ms）
+                val eBlur = PerformanceTracer.traceStart("animBlur", 0)
+                blurAnimatable.animateTo(1f, tween(50))
+                PerformanceTracer.traceEnd(eBlur)
+
+                // 阶段2: 清晰 + 边界过渡（150ms），两个动画并行
                 transitionState = TransitionState.CLEARING
-                
-                // 缓慢清晰阶段（250毫秒）
-                val clearStartTime = System.currentTimeMillis()
-                while (System.currentTimeMillis() - clearStartTime < 250) {
-                    val progress = (System.currentTimeMillis() - clearStartTime) / 250f
-                    blurProgress = 1f - progress
-                    boundsProgress = progress
-                    kotlinx.coroutines.delay(16) // 约60fps
+                val eClear = PerformanceTracer.traceStart("animClear", 0)
+                coroutineScope {
+                    launch { blurAnimatable.animateTo(0f, tween(150)) }
+                    launch { boundsAnimatable.animateTo(1f, tween(150)) }
                 }
-                blurProgress = 0f
-                boundsProgress = 1f
-                
+                PerformanceTracer.traceEnd(eClear)
+
                 // 完成动画
                 transitionState = TransitionState.IDLE
-                
+
                 // 更新比例和UI
+                val eState = PerformanceTracer.traceStart("updateState", 0)
                 previewAspectRatio = newRatio
-                
+                PerformanceTracer.traceEnd(eState)
+
                 // 同步 PreviewView scaleType
-                previewView.scaleType = toPreviewScaleType(newRatio)
-                // 所有模式使用统一偏移逻辑，居中显示
-                previewOffsetYPx = when {
-                    newRatio < 0f -> 0f  // 全屏模式
-                    newRatio == 1.0f -> 0f  // 1:1模式
-                    else -> 0f  // 其他模式居中
-                }
+                val newScaleType = toPreviewScaleType(newRatio)
+                val eScaleType = PerformanceTracer.traceStart("setScaleType", 0, "ratio=$newRatio,type=$newScaleType")
+                previewView.scaleType = newScaleType
+                PerformanceTracer.traceEnd(eScaleType)
+                previewOffsetYPx = 0f  // 所有模式居中
+
                 lastScreenInfo?.let { info ->
-                    val cameraOutputWidth = previewUseCase?.resolutionInfo?.resolution?.width ?: 0
-                    val cameraOutputHeight = previewUseCase?.resolutionInfo?.resolution?.height ?: 0
+                    val eResInfo2 = PerformanceTracer.traceStart("resolutionInfo", 0, "step=finalBounds")
+                    val cw = previewUseCase?.resolutionInfo?.resolution?.width ?: 0
+                    val ch = previewUseCase?.resolutionInfo?.resolution?.height ?: 0
+                    PerformanceTracer.traceEnd(eResInfo2)
+
+                    val e2 = PerformanceTracer.traceStart("computeFinalBounds", 0)
                     viewfinderBounds = computeViewfinderBounds(
                         info.left, info.top, info.width, info.height,
-                        newRatio, previewOffsetYPx,
-                        cameraOutputWidth, cameraOutputHeight,
-                        displayRotation
+                        newRatio, previewOffsetYPx, cw, ch, displayRotation
                     )
-                    // 固定4:3取景框位置，用于表盘定位
-                    viewfinderBounds43 = computeViewfinderBounds(
-                        info.left, info.top, info.width, info.height,
-                        0.75f, previewOffsetYPx,  // 4:3 = 0.75
-                        cameraOutputWidth, cameraOutputHeight,
-                        displayRotation
-                    )
+                    PerformanceTracer.traceEnd(e2, "bounds=${viewfinderBounds.width.toInt()}x${viewfinderBounds.height.toInt()}")
+
+                    // viewfinderBounds43 仅由 onLayoutChangeListener 计算，此处不重算
                     val b = viewfinderBounds
                     val dm = context.resources.displayMetrics
-                    DiagnosticsBackend.report(context, DiagnosticsBackend.Snapshot(
-                        trigger = "ratio_change",
-                        selectedRatioLabel = DiagnosticsBackend.getRatioLabel(newRatio),
-                        selectedRatioValue = newRatio,
-                        previewViewWidthPx = info.width,
-                        previewViewHeightPx = info.height,
-                        boundsLeft = b.left,
-                        boundsTop = b.top,
-                        boundsWidth = b.width,
-                        boundsHeight = b.height,
-                        offsetYPx = previewOffsetYPx,
-                        densityDpi = dm.densityDpi,
-                        screenWidthPx = dm.widthPixels,
-                        screenHeightPx = dm.heightPixels,
-                        cameraOutputWidth = cameraOutputWidth,
-                        cameraOutputHeight = cameraOutputHeight
-                    ))
+                    // 诊断上报移到后台线程，避免阻塞主线程
+                    val e5 = PerformanceTracer.traceStart("DiagnosticsReport", 0, "trigger=ratio_change")
+                    withContext(Dispatchers.Default) {
+                        DiagnosticsBackend.report(context, DiagnosticsBackend.Snapshot(
+                            trigger = "ratio_change",
+                            selectedRatioLabel = DiagnosticsBackend.getRatioLabel(newRatio),
+                            selectedRatioValue = newRatio,
+                            previewViewWidthPx = info.width,
+                            previewViewHeightPx = info.height,
+                            boundsLeft = b.left,
+                            boundsTop = b.top,
+                            boundsWidth = b.width,
+                            boundsHeight = b.height,
+                            offsetYPx = previewOffsetYPx,
+                            densityDpi = dm.densityDpi,
+                            screenWidthPx = dm.widthPixels,
+                            screenHeightPx = dm.heightPixels,
+                            cameraOutputWidth = cw,
+                            cameraOutputHeight = ch
+                        ))
+                    }
+                    PerformanceTracer.traceEnd(e5)
                 }
-                
+
                 val elapsed = System.currentTimeMillis() - startTime
                 Log.d("CameraScreen", "[比例切换] 完成，耗时: ${elapsed}ms")
+                PerformanceTracer.dump(0)
             }
-            kotlinx.coroutines.delay(200)
         }
     }
-    
-    // 场景识别（基于 PreviewView.bitmap，避免 ImageProxy 生命周期问题）
+
+    // 场景识别 — 使用降采样bitmap + AI处理锁，避免多协程争抢
     LaunchedEffect(Unit) {
         while (isActive) {
-            val bitmap = previewView.bitmap
-            if (bitmap != null) {
-                try {
-                    // 在后台线程执行场景识别，确保UI线程不被阻塞
-                    val result = withContext(Dispatchers.Default) { AiBackend.detectScene(bitmap) }
-                    // 回到主线程更新UI
-                    withContext(Dispatchers.Main) {
-                        sceneType = when (result.sceneType) {
-                            SceneType.PORTRAIT -> "人像拍摄"
-                            SceneType.LANDSCAPE -> "风景拍摄"
-                            SceneType.FOOD -> "美食拍摄"
-                            SceneType.NIGHT -> "夜景拍摄"
-                            SceneType.ARCHITECTURE -> "建筑拍摄"
-                            SceneType.AUTO -> "通用拍摄"
+            if (!isAiProcessing) {
+                val e1 = PerformanceTracer.traceStart("captureScaledBitmap", 0, "for=SceneDetection")
+                val bitmap = previewView.captureScaledBitmap()
+                PerformanceTracer.traceEnd(e1, "size=${bitmap?.width}x${bitmap?.height}")
+                if (bitmap != null) {
+                    isAiProcessing = true
+                    try {
+                        val e2 = PerformanceTracer.traceStart("AiBackend.detectScene", 0)
+                        val result = withContext(Dispatchers.Default) { AiBackend.detectScene(bitmap) }
+                        PerformanceTracer.traceEnd(e2, "scene=${result.sceneType}")
+                        withContext(Dispatchers.Main) {
+                            sceneType = when (result.sceneType) {
+                                SceneType.PORTRAIT -> "人像拍摄"
+                                SceneType.LANDSCAPE -> "风景拍摄"
+                                SceneType.FOOD -> "美食拍摄"
+                                SceneType.NIGHT -> "夜景拍摄"
+                                SceneType.ARCHITECTURE -> "建筑拍摄"
+                                SceneType.AUTO -> "通用拍摄"
+                            }
+                            detectedObjects = result.detectedObjects
                         }
-                        detectedObjects = result.detectedObjects
+                    } finally {
+                        bitmap.recycle()
+                        isAiProcessing = false
                     }
-                } finally {
-                    // 释放bitmap资源
-                    bitmap.recycle()
                 }
             }
-            kotlinx.coroutines.delay(1500) // 增加延迟，减少CPU占用
+            kotlinx.coroutines.delay(1500)
         }
     }
     
-    // 云端AI分析（低频调用，节省API费用）- 云端优先
+    // 云端AI分析（低频调用） — 使用降采样bitmap + AI处理锁
     LaunchedEffect(showGuides, cloudAiEnabled) {
         if (!showGuides || !cloudAiEnabled) return@LaunchedEffect
         while (isActive) {
@@ -722,68 +753,67 @@ private fun CameraScreenContent(
                 kotlinx.coroutines.delay(5000)
                 continue
             }
-            kotlinx.coroutines.delay(10000) // 增加延迟，减少频率
-            val bitmap = previewView.bitmap ?: continue
+            kotlinx.coroutines.delay(10000)
+            if (isAiProcessing) continue
+            val bitmap = previewView.captureScaledBitmap() ?: continue
+            isAiProcessing = true
             try {
                 val settings = CameraSettingsInfo(
                     iso = if (iso != "Auto") iso.toIntOrNull() else null,
                     shutterSpeed = shutter,
                     ev = CameraBackend.ManualSettings.evIndex
                 )
-                
+
                 withContext(Dispatchers.Main) {
                     cloudAiTipPending = true
                 }
-                
-                // 在后台线程执行云端AI分析
+
                 val result = withContext(Dispatchers.IO) {
                     CloudAiService.analyzeScene(context, bitmap, detectedObjects, settings)
                 }
-                
+
                 withContext(Dispatchers.Main) {
                     cloudAiTipPending = false
-                    
+
                     if (result.success && result.suggestions.isNotEmpty()) {
                         cloudAiTip = result.suggestions.first()
-                        // 云端建议优先级高，覆盖本地建议
                         currentTip = cloudAiTip
                         currentTipSource = TipSource.CLOUD
                         showTip = true
                         Log.i("CameraScreen", "[AI建议] 显示云端建议: $currentTip")
                     } else {
-                        // 云端调用失败，记录错误
                         Log.w("CameraScreen", "[AI建议] 云端模型调用失败: ${result.errorMessage}，将使用本地模型兜底")
                     }
                 }
-                
+
                 kotlinx.coroutines.delay(4000)
-                
+
                 withContext(Dispatchers.Main) {
-                    // 只有当前显示的仍是这条云端建议时才隐藏
                     if (currentTipSource == TipSource.CLOUD && currentTip == cloudAiTip) {
                         showTip = false
                         currentTipSource = TipSource.NONE
                     }
                 }
             } finally {
-                // 释放bitmap资源
                 bitmap.recycle()
+                isAiProcessing = false
             }
         }
     }
 
-    // 构图分析（本地AI兜底，仅在云端无建议时显示）
+    // 构图分析（本地AI兜底） — 使用降采样bitmap + AI处理锁
     LaunchedEffect(showGuides) {
         if (!showGuides) return@LaunchedEffect
         while (isActive) {
-            kotlinx.coroutines.delay(4000) // 增加延迟，减少频率
-            
+            kotlinx.coroutines.delay(4000)
+
             // 云端建议正在处理或已显示时，跳过本地建议
-            if (cloudAiTipPending || currentTipSource == TipSource.CLOUD) {
+            if (cloudAiTipPending || currentTipSource == TipSource.CLOUD || isAiProcessing) {
                 continue
             }
-            
-            val bitmap = previewView.bitmap ?: continue
+
+            val bitmap = previewView.captureScaledBitmap() ?: continue
+            isAiProcessing = true
             try {
                 val st = when (sceneType) {
                     "人像拍摄" -> SceneType.PORTRAIT
@@ -793,15 +823,12 @@ private fun CameraScreenContent(
                     "建筑拍摄" -> SceneType.ARCHITECTURE
                     else -> SceneType.AUTO
                 }
-                // 在后台线程执行构图分析
                 val result = withContext(Dispatchers.Default) { AiBackend.analyzeComposition(bitmap, st) }
                 val suggestion = result.suggestions.firstOrNull()
-                
-                // 回到主线程更新UI
+
                 withContext(Dispatchers.Main) {
                     if (result.success && suggestion != null && suggestion.message.isNotBlank()) {
                         compositionTip = suggestion.message
-                        // 只在无云端建议时显示本地建议
                         if (currentTipSource != TipSource.CLOUD) {
                             currentTip = compositionTip
                             currentTipSource = TipSource.LOCAL
@@ -810,20 +837,18 @@ private fun CameraScreenContent(
                         }
                     }
                 }
-                
+
                 kotlinx.coroutines.delay(3000)
-                
-                // 回到主线程更新UI
+
                 withContext(Dispatchers.Main) {
-                    // 只有当前显示的仍是这条本地建议时才隐藏
                     if (currentTipSource == TipSource.LOCAL && currentTip == compositionTip) {
                         showTip = false
                         currentTipSource = TipSource.NONE
                     }
                 }
             } finally {
-                // 释放bitmap资源
                 bitmap.recycle()
+                isAiProcessing = false
             }
         }
     }
@@ -831,16 +856,20 @@ private fun CameraScreenContent(
     // 初始化相机
         LaunchedEffect(Unit) {
             val startTime = System.currentTimeMillis()
+            val initTraceId = PerformanceTracer.traceClick("CameraInit", "lens=$lensFacing")
             Log.d("CameraScreen", "开始初始化相机")
-            
+
             // 优先使用预加载的相机提供者
+            val e1 = PerformanceTracer.traceStart("GetCameraProvider", initTraceId)
             val provider = CameraPreloadManager.getPreloadedCameraProvider() ?: ProcessCameraProvider.getInstance(context).get()
             cameraProvider = provider
-            
+            PerformanceTracer.traceEnd(e1)
+
             val providerTime = System.currentTimeMillis() - startTime
             Log.d("CameraScreen", "相机提供者获取耗时: ${providerTime}ms")
 
             // 按当前比例设置相机输出分辨率比例，使用高分辨率提升清晰度
+            val e2 = PerformanceTracer.traceStart("BuildPreview", initTraceId)
             val preview = Preview.Builder()
                 .setTargetRotation(displayRotation)
                 .setTargetAspectRatio(cameraTargetAspectRatio)
@@ -849,21 +878,26 @@ private fun CameraScreenContent(
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
             previewUseCase = preview
+            PerformanceTracer.traceEnd(e2)
 
         // 拍照使用默认配置
+        val e3 = PerformanceTracer.traceStart("BuildImageCapture", initTraceId)
         val capture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
             .setJpegQuality(100)
             .setTargetRotation(displayRotation)
             .build()
         imageCapture = capture
+        PerformanceTracer.traceEnd(e3)
 
         val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
 
         try {
+            val e4 = PerformanceTracer.traceStart("BindToLifecycle", initTraceId)
             provider.unbindAll()
             camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
             CameraSession.set(camera, capture)
+            PerformanceTracer.traceEnd(e4)
 
             // 配置相机参数以优化画质和减少频闪
             try {
@@ -889,6 +923,7 @@ private fun CameraScreenContent(
 
         val totalTime = System.currentTimeMillis() - startTime
         Log.d("CameraScreen", "相机初始化完成，总耗时: ${totalTime}ms")
+        PerformanceTracer.dump(initTraceId)
 
         // 延迟初始化extensionsManager，不影响相机预览启动
         lifecycleOwner.lifecycleScope.launch {
@@ -913,6 +948,7 @@ private fun CameraScreenContent(
         val needRebind = lensFacing != lastLensFacing || hdrEnabled != lastHdrEnabled
         if (!needRebind) return@LaunchedEffect
         
+        val rebindTraceId = PerformanceTracer.traceClick("CameraRebind", "lens=$lensFacing,hdr=$hdrEnabled")
         Log.d("CameraScreen", "[相机重绑定] 开始: lensFacing=$lensFacing, hdrEnabled=$hdrEnabled")
         val rebindStart = System.currentTimeMillis()
         isCameraSwitching = true
@@ -932,9 +968,13 @@ private fun CameraScreenContent(
         }
 
         try {
+            val e1 = PerformanceTracer.traceStart("unbindAll", rebindTraceId)
             provider.unbindAll()
+            PerformanceTracer.traceEnd(e1)
+            val e2 = PerformanceTracer.traceStart("bindToLifecycle", rebindTraceId)
             camera = provider.bindToLifecycle(lifecycleOwner, selector, previewUseCase!!, capture)
             CameraSession.set(camera, capture)
+            PerformanceTracer.traceEnd(e2)
 
             isCameraSwitching = false
 
@@ -942,6 +982,7 @@ private fun CameraScreenContent(
 
             // 配置相机参数以优化画质和减少频闪
             try {
+                val e3 = PerformanceTracer.traceStart("ConfigCameraParams", rebindTraceId)
                 val currentCamera = camera ?: throw IllegalStateException("相机未绑定")
                 val camera2Control = androidx.camera.camera2.interop.Camera2CameraControl.from(currentCamera.cameraControl)
                 val options = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
@@ -960,12 +1001,14 @@ private fun CameraScreenContent(
                     .build()
                 camera2Control.setCaptureRequestOptions(options)
                 Log.d("CameraScreen", "相机优化参数已配置：抗频闪、连续对焦、光学防抖")
+                PerformanceTracer.traceEnd(e3)
             } catch (e: Throwable) {
                 Log.e("CameraScreen", "无法配置相机优化参数", e)
             }
-            
+
             val rebindElapsed = System.currentTimeMillis() - rebindStart
             Log.d("CameraScreen", "[相机重绑定] 完成，耗时: ${rebindElapsed}ms")
+            PerformanceTracer.dump(rebindTraceId)
         } catch (e: Throwable) {
             Log.e("CameraScreen", "[相机重绑定] 失败", e)
         }
@@ -1034,8 +1077,21 @@ private fun CameraScreenContent(
             .pointerInput(camera, previewView, context, latestPhotoUri) {
                 // 双击切换摄像头
                 detectTapGestures(
-                    onDoubleTap = { onFlipCamera() },
+                    onDoubleTap = {
+                        val tid = PerformanceTracer.traceClick("FlipCamera_DoubleTap")
+                        onFlipCamera()
+                        PerformanceTracer.dump(tid)
+                    },
                     onTap = { tap ->
+                        val tid = PerformanceTracer.traceClick("TapToFocus", "x=${tap.x.toInt()},y=${tap.y.toInt()}")
+                        // 显示对焦环反馈动画
+                        focusPoint = Offset(tap.x, tap.y)
+                        scope.launch {
+                            focusRingAnimatable.snapTo(1f)
+                            focusRingAnimatable.animateTo(0f, tween(300))
+                            focusPoint = null
+                        }
+
                         val c = camera ?: return@detectTapGestures
                         try {
                             val factory = previewView.meteringPointFactory
@@ -1046,6 +1102,7 @@ private fun CameraScreenContent(
                             c.cameraControl.startFocusAndMetering(action)
                         } catch (_: Throwable) {
                         }
+                        PerformanceTracer.dump(tid)
                     }
                 )
             }
@@ -1063,6 +1120,8 @@ private fun CameraScreenContent(
                     }
                     // 监听布局变化，计算实际取景框区域
                     addOnLayoutChangeListener { v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                        // 仅在实际布局变化时重算（跳过动画导致的假触发）
+                        if (left == oldLeft && top == oldTop && right == oldRight && bottom == oldBottom) return@addOnLayoutChangeListener
                         val sw = v.width.toFloat()
                         val sh = v.height.toFloat()
                         val ratio = CameraBackend.ManualSettings.previewAspectRatioPortrait
@@ -1082,7 +1141,8 @@ private fun CameraScreenContent(
                         )
                         val b = viewfinderBounds
                         val dm = context.resources.displayMetrics
-                        scope.launch {
+                        // 诊断 I/O 移到后台线程，避免主线程阻塞
+                        scope.launch(Dispatchers.Default) {
                             DiagnosticsBackend.report(context, DiagnosticsBackend.Snapshot(
                                 trigger = "layout_change",
                                 selectedRatioLabel = DiagnosticsBackend.getRatioLabel(ratio),
@@ -1120,8 +1180,8 @@ private fun CameraScreenContent(
 
         // 取景框边框 - 仅显示拍摄范围边框，预览全屏显示（苹果相机风格）
         if (viewfinderBounds.width > 0) {
-            val currentBounds = if (boundsProgress > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
-                ViewfinderBounds.lerp(startBounds, targetBounds, boundsProgress)
+            val currentBounds = if (boundsAnimatable.value > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
+                ViewfinderBounds.lerp(startBounds, targetBounds, boundsAnimatable.value)
             } else {
                 viewfinderBounds
             }
@@ -1130,8 +1190,8 @@ private fun CameraScreenContent(
 
         // 构图辅助线 - 基于实际预览区域绘制，与取景框同步偏移
         if (showGuides && viewfinderBounds.width > 0) {
-            val currentBounds = if (boundsProgress > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
-                ViewfinderBounds.lerp(startBounds, targetBounds, boundsProgress)
+            val currentBounds = if (boundsAnimatable.value > 0f && startBounds != ViewfinderBounds.ZERO && targetBounds != ViewfinderBounds.ZERO) {
+                ViewfinderBounds.lerp(startBounds, targetBounds, boundsAnimatable.value)
             } else {
                 viewfinderBounds
             }
@@ -1146,9 +1206,11 @@ private fun CameraScreenContent(
             shutter = shutter,
             previewAspectRatio = previewAspectRatio,
             onAspectRatioChanged = { newRatio ->
+                val tid = PerformanceTracer.traceClick("AspectRatioChange", "ratio=$newRatio")
                 Log.d("CameraScreen", "画幅比例选择: $newRatio")
                 previewAspectRatio = newRatio
                 CameraBackend.ManualSettings.previewAspectRatioPortrait = newRatio
+                PerformanceTracer.dump(tid, minDurationMs = 16)
             },
             onNavigateToSettings = {
                 scope.launch {
@@ -1227,17 +1289,33 @@ private fun CameraScreenContent(
             )
         }
         
-        // 比例切换时的模糊覆盖层
-        if (blurProgress > 0f) {
+        // 比例切换时的模糊覆盖层 — 使用 Animatable.value 驱动，Compose 自动管理帧调度
+        if (blurAnimatable.value > 0f) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .blur(radius = (blurProgress * 20f).dp) // 最大20dp模糊
-                    .background(Color.Black.copy(alpha = blurProgress * 0.2f)) // 轻微变暗
+                    .blur(radius = (blurAnimatable.value * 20f).dp)
+                    .background(Color.Black.copy(alpha = blurAnimatable.value * 0.2f))
             )
         }
 
-        
+        // 对焦环反馈 — 点击对焦时显示收缩动画环
+        focusPoint?.let { point ->
+            val ringAlpha = focusRingAnimatable.value
+            if (ringAlpha > 0f) {
+                val ringRadiusPx = with(density) { (40.dp.toPx() * (0.3f + ringAlpha * 0.7f)) }
+                val ringStrokePx = with(density) { 2.5.dp.toPx() }
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawCircle(
+                        color = Color.White.copy(alpha = ringAlpha * 0.8f),
+                        radius = ringRadiusPx,
+                        center = point,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = ringStrokePx)
+                    )
+                }
+            }
+        }
+
         // 扇形变焦滑块（展开时显示）
         if (showArcZoom) {
             Box(
@@ -1276,8 +1354,9 @@ private fun CameraScreenContent(
                 zoomRatio = zoomRatio,
                 zoomPresets = filteredPresets,
                 onZoomPresetSelected = { preset ->
+                    val tid = PerformanceTracer.traceClick("ZoomPreset", "preset=${preset}x")
                     camera?.cameraControl?.setZoomRatio(preset)
-                    // 不在这里关闭扇形，让滑动手势可以持续操作
+                    PerformanceTracer.dump(tid)
                 },
                 onExpandArcZoom = { showArcZoom = true },
                 onCollapseArcZoom = { showArcZoom = false },
@@ -1290,27 +1369,38 @@ private fun CameraScreenContent(
             // 五个功能按钮
             SideTools(
                 showGuides = showGuides,
-                onToggleGuides = { showGuides = !showGuides },
+                onToggleGuides = {
+                    val tid = PerformanceTracer.traceClick("ToggleGuides", "enabled=${!showGuides}")
+                    showGuides = !showGuides
+                    PerformanceTracer.dump(tid)
+                },
                 flashEnabled = flashEnabled,
-                onToggleFlash = { flashEnabled = !flashEnabled },
+                onToggleFlash = {
+                    val tid = PerformanceTracer.traceClick("ToggleFlash", "enabled=${!flashEnabled}")
+                    flashEnabled = !flashEnabled
+                    PerformanceTracer.dump(tid)
+                },
                 hdrEnabled = hdrEnabled,
                 onToggleHdr = {
+                    val tid = PerformanceTracer.traceClick("ToggleHDR", "enabled=${!hdrEnabled}")
                     hdrEnabled = !hdrEnabled
                     CameraBackend.ManualSettings.hdrEnabled = hdrEnabled
+                    PerformanceTracer.dump(tid)
                 },
                 timerSeconds = timerSeconds,
                 onCycleTimer = {
-                    timerSeconds = when (timerSeconds) {
-                        0 -> 3
-                        3 -> 10
-                        else -> 0
-                    }
+                    val next = when (timerSeconds) { 0 -> 3; 3 -> 10; else -> 0 }
+                    val tid = PerformanceTracer.traceClick("CycleTimer", "from=${timerSeconds}s,to=${next}s")
+                    timerSeconds = next
+                    PerformanceTracer.dump(tid)
                 },
                 cloudAiEnabled = cloudAiEnabled,
                 onToggleCloudAi = {
+                    val tid = PerformanceTracer.traceClick("ToggleCloudAI", "enabled=${!cloudAiEnabled}")
                     if (CloudAiService.hasApiKey(context)) {
                         cloudAiEnabled = !cloudAiEnabled
                     }
+                    PerformanceTracer.dump(tid)
                 },
                 modifier = Modifier.padding(bottom = 24.dp),
                 themeType = themeType
@@ -1323,8 +1413,12 @@ private fun CameraScreenContent(
                 aperture = aperture,
                 lastPhotoUri = latestPhotoUri,
                 isFullscreen = previewAspectRatio < 0f || previewAspectRatio == 0.5625f,
-                onFlipCamera = { lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK },
+                onFlipCamera = {
+                    val tid = PerformanceTracer.traceClick("FlipCamera_BottomBtn")
+                    lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+                },
                 onCapture = {
+                    val tid = PerformanceTracer.traceClick("CaptureButton", "timer=${timerSeconds}s")
                     val capture = imageCapture
                     val captureAction = {
                         CameraBackend.capturePhoto(
@@ -1333,9 +1427,12 @@ private fun CameraScreenContent(
                             lensFacing = lensFacing,
                             onSuccess = { path ->
                                 lastCapturedUri = android.net.Uri.fromFile(java.io.File(path))
+                                PerformanceTracer.dump(tid)
                                 onNavigateToEdit(path)
                             },
-                            onError = { /* TODO: show toast/snackbar */ }
+                            onError = {
+                                PerformanceTracer.dump(tid)
+                            }
                         )
                     }
 
@@ -1343,11 +1440,13 @@ private fun CameraScreenContent(
                         // 取消倒计时
                         isCountingDown = false
                         countdownRemaining = 0
+                        PerformanceTracer.dump(tid)
                     } else if (timerSeconds > 0) {
                         // 启动倒计时
                         isCountingDown = true
                         countdownRemaining = timerSeconds
                         scope.launch {
+                            PerformanceTracer.traceStart("CountdownTimer", tid, "seconds=$timerSeconds")
                             while (countdownRemaining > 0 && isCountingDown) {
                                 kotlinx.coroutines.delay(1000L)
                                 if (isCountingDown) {
