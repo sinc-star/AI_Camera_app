@@ -137,7 +137,7 @@ object AiBackend {
             val faces = detector.process(image).await()
 
             // 如果有OpenCV支持，使用高级分析
-            if (OpenCvHelper.isReady() && faces.isNotEmpty()) {
+            if (OpenCvHelper.isReady()) {
                 // 将ImageProxy转换为Bitmap用于OpenCV分析
                 val bitmap = imageProxyToBitmap(imageProxy)
                 if (bitmap != null) {
@@ -305,8 +305,8 @@ object AiBackend {
         return try {
             val faces = detector.process(image).await()
 
-            // 如果有OpenCV支持且检测到人脸，使用高级分析
-            if (OpenCvHelper.isReady() && faces.isNotEmpty()) {
+            // 如果有OpenCV支持，使用高级分析
+            if (OpenCvHelper.isReady()) {
                 val detailedResult = CompositionEngine.analyzeAdvanced(bitmap, faces, sceneType)
                 return CompositionEngine.toLegacyResult(detailedResult)
             }

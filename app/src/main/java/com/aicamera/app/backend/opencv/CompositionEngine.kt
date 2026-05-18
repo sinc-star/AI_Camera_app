@@ -78,8 +78,8 @@ object CompositionEngine {
             // 4. 前景层次
             val foregroundRegions = OpenCvHelper.detectForegroundRegions(edges)
 
-            // 5. 主体位置
-            val subjectPosition = extractSubjectPosition(faces, bitmap.width, bitmap.height)
+            // 5. 主体位置（无人脸时使用轮廓检测）
+            val subjectPosition = extractSubjectPosition(faces, bitmap.width, bitmap.height, edges)
 
             // 6. 头顶留白
             val headroomRatio = if (faces.isNotEmpty()) {
@@ -332,19 +332,42 @@ object CompositionEngine {
     private fun extractSubjectPosition(
         faces: List<Face>,
         imageWidth: Int,
-        imageHeight: Int
+        imageHeight: Int,
+        edges: Mat? = null
     ): SubjectPosition? {
-        if (faces.isEmpty()) return null
+        if (faces.isNotEmpty()) {
+            val mainFace = faces.maxBy { it.boundingBox.width() * it.boundingBox.height() }
+            val box = mainFace.boundingBox
 
-        val mainFace = faces.maxBy { it.boundingBox.width() * it.boundingBox.height() }
-        val box = mainFace.boundingBox
+            return SubjectPosition(
+                centerX = (box.left + box.width() / 2f) / imageWidth,
+                centerY = (box.top + box.height() / 2f) / imageHeight,
+                width = box.width().toFloat() / imageWidth,
+                height = box.height().toFloat() / imageHeight,
+                type = SubjectType.FACE
+            )
+        }
+
+        return edges?.let { detectContentCenter(it, imageWidth, imageHeight) }
+    }
+
+    private fun detectContentCenter(edges: Mat, imageWidth: Int, imageHeight: Int): SubjectPosition? {
+        val contours = OpenCvHelper.detectSignificantContours(edges, minArea = 500.0)
+        
+        if (contours.isEmpty()) return null
+
+        val largestContour = contours.first()
+        val centerX = (largestContour.x + largestContour.width / 2f) / imageWidth
+        val centerY = (largestContour.y + largestContour.height / 2f) / imageHeight
+        val width = largestContour.width.toFloat() / imageWidth
+        val height = largestContour.height.toFloat() / imageHeight
 
         return SubjectPosition(
-            centerX = (box.left + box.width() / 2f) / imageWidth,
-            centerY = (box.top + box.height() / 2f) / imageHeight,
-            width = box.width().toFloat() / imageWidth,
-            height = box.height().toFloat() / imageHeight,
-            type = SubjectType.FACE
+            centerX = centerX.coerceIn(0f, 1f),
+            centerY = centerY.coerceIn(0f, 1f),
+            width = width.coerceIn(0f, 1f),
+            height = height.coerceIn(0f, 1f),
+            type = SubjectType.GENERIC
         )
     }
 

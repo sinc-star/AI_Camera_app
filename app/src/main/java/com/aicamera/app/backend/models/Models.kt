@@ -61,7 +61,7 @@ data class CompositionAnalysisResult(
 )
 
 enum class CropMode { AUTO, PORTRAIT, LANDSCAPE, SQUARE }
-enum class SubjectType { FACE, UPPER_BODY, FULL_BODY, OBJECT, TEXT, UNKNOWN }
+enum class SubjectType { FACE, UPPER_BODY, FULL_BODY, OBJECT, TEXT, GENERIC, UNKNOWN }
 
 data class CropRect(
     val left: Float,
