@@ -20,7 +20,6 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 object CropBackend {
     // 裁剪保护阈值配置
@@ -55,89 +54,100 @@ object CropBackend {
                 return@withContext defaultResult("未检测到主体，已给出默认裁剪框", cropMode)
             }
 
-            // 1. 按面积排序，找到主主体（面积最大的）
-            val sortedObjects = objects.sortedByDescending {
-                it.boundingBox.width() * it.boundingBox.height()
-            }
-            val mainSubject = sortedObjects.first()
-            val mainBox = mainSubject.boundingBox
-            val mainArea = mainBox.width() * mainBox.height().toFloat()
-            val mainSubjectRatio = mainArea / imageArea
+            val main = objects.maxBy { it.boundingBox.width() * it.boundingBox.height() }
+            val rect = main.boundingBox
+            val subjects = inferSubjects(main)
 
-            // 2. 筛选与主主体相关的其他小主体
-            val relatedSubjects = sortedObjects.drop(1).filter { obj ->
-                isRelatedSubject(mainSubject, obj, imageWidth, imageHeight)
-            }
+            // 计算主体占比
+            val subjectArea = rect.width() * rect.height().toFloat()
+            val subjectRatio = subjectArea / imageArea
 
-            // 3. 收集所有需要被覆盖的主体
-            val allSubjects = listOf(mainSubject) + relatedSubjects
-            val combinedRect = calculateBoundingRect(allSubjects, imageWidth, imageHeight)
+            // 判断主体类型
+            val hasFace = subjects.contains(SubjectType.FACE)
 
-            // 计算所有检测到的主体类型
-            val detectedSubjectTypes = allSubjects.flatMap { inferSubjects(it) }.distinct()
-            val hasFace = detectedSubjectTypes.contains(SubjectType.FACE)
-
-            // 4. 根据主主体大小动态调整 padding
+            // 根据主体大小动态调整 padding
             val paddingRatio = when {
-                mainSubjectRatio > LARGE_SUBJECT_THRESHOLD -> LARGE_SUBJECT_PADDING
+                subjectRatio > LARGE_SUBJECT_THRESHOLD -> LARGE_SUBJECT_PADDING
                 hasFace -> DEFAULT_PADDING
                 else -> DEFAULT_PADDING
             }
 
-            // 5. 计算带 padding 的裁剪框
-            val paddedRect = padRect(combinedRect, imageWidth, imageHeight, paddingRatio)
+            // 计算带 padding 的裁剪框
+            val padded = padRect(rect, imageWidth, imageHeight, paddingRatio)
 
-            // 6. 计算外接框占原图比例
-            val cropArea = paddedRect.width() * paddedRect.height().toFloat()
+            // 计算当前裁剪框占原图比例
+            val cropArea = padded.width() * padded.height().toFloat()
             val cropRatio = cropArea / imageArea
 
-            // 7. 判断是否需要裁剪（裁剪比例超过40%则放弃裁剪）
-            // 如果剩余面积小于60%，意味着裁剪了超过40%
-            if (cropRatio < 0.60f) {
-                Log.d("CropBackend", "裁剪后剩余 ${String.format("%.1f%%", cropRatio * 100)}，超过40%需裁剪，放弃裁剪")
+            // 计算需要裁剪掉的部分（边缘区域）
+            val edgeArea = imageArea - cropArea
+            val edgeRatio = edgeArea / imageArea
+
+            // 检查是否满足裁剪条件
+            val shouldSkipCrop = when {
+                // 情况1：主体占比过大，裁剪会导致信息丢失
+                subjectRatio > LARGE_SUBJECT_THRESHOLD -> {
+                    Log.d("CropBackend", "主体占比 ${String.format("%.1f%%", subjectRatio * 100)} 过大，跳过裁剪")
+                    true
+                }
+                // 情况2：需要裁剪的边缘部分超过阈值
+                edgeRatio > MAX_CROP_RATIO -> {
+                    Log.d("CropBackend", "需裁剪边缘 ${String.format("%.1f%%", edgeRatio * 100)} 超过阈值，跳过裁剪")
+                    true
+                }
+                // 情况3：检测框置信度低（ML Kit 的 trackingId 为 null 通常表示检测不够稳定）
+                main.trackingId == null && objects.size > 1 -> {
+                    Log.d("CropBackend", "检测置信度较低，存在多个干扰物体")
+                    false // 不跳过，但降低置信度
+                }
+                else -> false
+            }
+
+            // 如果应该跳过裁剪，返回基于主体的保守裁剪框或默认裁剪框
+            if (shouldSkipCrop) {
+                val conservativeRect = calculateConservativeCrop(rect, imageWidth, imageHeight, subjectRatio)
+                val (finalRect, confidence) = if (subjectRatio > 0.85f) {
+                    // 主体几乎占满画面，使用原图
+                    CropRect(0f, 0f, 1f, 1f) to 0.95f
+                } else {
+                    conservativeRect to 0.75f
+                }
 
                 return@withContext SmartCropResult(
                     success = true,
-                    cropRect = CropRect(0f, 0f, 1f, 1f),
-                    confidence = 0.95f,
-                    suggestion = "✨ 当前已是最优构图",
-                    detectedSubjects = detectedSubjectTypes,
+                    cropRect = finalRect,
+                    confidence = confidence,
+                    suggestion = "✨ AI 建议：主体占比较大，建议保留原图或微调",
+                    detectedSubjects = subjects,
                     aspectRatio = aspectRatioFor(cropMode)
                 )
             }
 
-            // 8. 正常计算裁剪框
+            // 正常计算裁剪框
             val cropRect = CropRect(
-                left = paddedRect.left.toFloat() / imageWidth,
-                top = paddedRect.top.toFloat() / imageHeight,
-                width = paddedRect.width().toFloat() / imageWidth,
-                height = paddedRect.height().toFloat() / imageHeight
+                left = padded.left.toFloat() / imageWidth,
+                top = padded.top.toFloat() / imageHeight,
+                width = padded.width().toFloat() / imageWidth,
+                height = padded.height().toFloat() / imageHeight
             )
 
-            // 9. 动态计算置信度（考虑多主体情况）
-            val edgeRatio = 1f - cropRatio
-            val confidence = calculateConfidence(
-                mainSubject,
-                objects.size,
-                mainSubjectRatio,
-                edgeRatio,
-                relatedSubjects.size
-            )
+            // 动态计算置信度
+            val confidence = calculateConfidence(main, objects.size, subjectRatio, edgeRatio)
 
-            // 10. 生成建议文案
-            val suggestion = buildSuggestion(
-                hasFace,
-                confidence,
-                detectedSubjectTypes,
-                relatedSubjects.size
-            )
+            val suggestion = when {
+                hasFace && confidence > 0.85f -> "✨ AI 建议：检测到人像，已优化构图"
+                hasFace -> "✨ AI 建议：检测到人像，建议检查裁剪效果"
+                subjects.contains(SubjectType.TEXT) -> "✨ AI 建议：检测到文字，请确认内容完整"
+                confidence > 0.8f -> "✨ AI 建议：检测到主体，已智能优化"
+                else -> "✨ AI 建议：检测到主体，建议手动调整"
+            }
 
             SmartCropResult(
                 success = true,
                 cropRect = clampCropRect(cropRect),
                 confidence = confidence,
                 suggestion = suggestion,
-                detectedSubjects = detectedSubjectTypes,
+                detectedSubjects = subjects,
                 aspectRatio = aspectRatioFor(cropMode)
             )
         } catch (e: Throwable) {
@@ -226,74 +236,6 @@ object CropBackend {
     }
 
     /**
-     * 判断一个小主体是否与主主体"相关"
-     * 基于距离和面积比进行判断
-     */
-    private fun isRelatedSubject(
-        main: DetectedObject,
-        other: DetectedObject,
-        imgWidth: Int,
-        imgHeight: Int
-    ): Boolean {
-        val mainBox = main.boundingBox
-        val otherBox = other.boundingBox
-
-        val mainCenterX = (mainBox.left + mainBox.right) / 2f
-        val mainCenterY = (mainBox.top + mainBox.bottom) / 2f
-        val otherCenterX = (otherBox.left + otherBox.right) / 2f
-        val otherCenterY = (otherBox.top + otherBox.bottom) / 2f
-
-        // 距离阈值：基于图像对角线的25%
-        val diagonal = sqrt((imgWidth * imgWidth + imgHeight * imgHeight).toFloat())
-        val distanceThreshold = diagonal * 0.25f
-
-        val distance = sqrt(
-            (mainCenterX - otherCenterX).let { it * it } +
-            (mainCenterY - otherCenterY).let { it * it }
-        )
-
-        // 小主体面积不能太大（避免纳入其他独立主体）
-        val mainArea = mainBox.width() * mainBox.height()
-        val otherArea = otherBox.width() * otherBox.height()
-        val areaRatio = otherArea.toFloat() / mainArea
-
-        return distance < distanceThreshold && areaRatio < 0.5f
-    }
-
-    /**
-     * 计算包含多个主体的最小外接矩形
-     */
-    private fun calculateBoundingRect(
-        objects: List<DetectedObject>,
-        imgWidth: Int,
-        imgHeight: Int
-    ): Rect {
-        if (objects.isEmpty()) {
-            return Rect(0, 0, imgWidth, imgHeight)
-        }
-
-        var minLeft = Int.MAX_VALUE
-        var minTop = Int.MAX_VALUE
-        var maxRight = Int.MIN_VALUE
-        var maxBottom = Int.MIN_VALUE
-
-        objects.forEach { obj ->
-            val box = obj.boundingBox
-            minLeft = min(minLeft, box.left)
-            minTop = min(minTop, box.top)
-            maxRight = max(maxRight, box.right)
-            maxBottom = max(maxBottom, box.bottom)
-        }
-
-        return Rect(
-            minLeft.coerceIn(0, imgWidth - 1),
-            minTop.coerceIn(0, imgHeight - 1),
-            maxRight.coerceIn(minLeft + 1, imgWidth),
-            maxBottom.coerceIn(minTop + 1, imgHeight)
-        )
-    }
-
-    /**
      * 计算保守的裁剪框，当主体过大或检测不确定时使用
      * 尽量保留更多画面，只做最小程度的裁剪
      */
@@ -342,8 +284,7 @@ object CropBackend {
         mainObject: DetectedObject,
         objectCount: Int,
         subjectRatio: Float,
-        edgeRatio: Float,
-        relatedSubjectCount: Int = 0
+        edgeRatio: Float
     ): Float {
         var confidence = 0.75f // 基础置信度
 
@@ -360,54 +301,19 @@ object CropBackend {
             else -> 0f
         }
 
-        // 裁剪比例适中时更可靠（15%-35%的裁剪比例最佳）
+        // 裁剪比例适中时更可靠
         confidence += when {
             edgeRatio in 0.15f..0.35f -> 0.05f
             edgeRatio > 0.5f -> -0.15f // 裁剪过多可能有问题
             else -> 0f
         }
 
-        // 检测到相关小主体增加置信度（构图更丰富）
-        confidence += when (relatedSubjectCount) {
-            1 -> 0.03f
-            2 -> 0.05f
-            in 3..5 -> 0.02f
-            else -> 0f
-        }
-
-        // 过多物体干扰降低置信度
-        if (objectCount > 5) {
-            confidence -= 0.03f * (objectCount - 5).coerceAtMost(5)
+        // 多个物体干扰降低置信度
+        if (objectCount > 3) {
+            confidence -= 0.05f * (objectCount - 3).coerceAtMost(3)
         }
 
         return confidence.coerceIn(0f, 1f)
-    }
-
-    /**
-     * 构建裁剪建议文案
-     */
-    private fun buildSuggestion(
-        hasFace: Boolean,
-        confidence: Float,
-        subjects: List<SubjectType>,
-        relatedCount: Int
-    ): String {
-        return when {
-            hasFace && confidence > 0.88f && relatedCount > 0 ->
-                "✨ AI 建议：检测到人像及${relatedCount}个相关主体，已优化整体构图"
-            hasFace && confidence > 0.85f ->
-                "✨ AI 建议：检测到人像，已优化构图"
-            hasFace ->
-                "✨ AI 建议：检测到人像，建议检查裁剪效果"
-            subjects.contains(SubjectType.TEXT) ->
-                "✨ AI 建议：检测到文字，请确认内容完整"
-            relatedCount > 0 && confidence > 0.8f ->
-                "✨ AI 建议：检测到${relatedCount + 1}个主体，已智能优化整体构图"
-            confidence > 0.8f ->
-                "✨ AI 建议：检测到主体，已智能优化"
-            else ->
-                "✨ AI 建议：检测到主体，建议手动调整"
-        }
     }
 }
 
