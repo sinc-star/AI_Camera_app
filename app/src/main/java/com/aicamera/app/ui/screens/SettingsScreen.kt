@@ -144,6 +144,7 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight(0.30f)
+            .statusBarsPadding()
             .offset(y = 0.dp)
             .pointerInput(Unit) {
                 val threshold = with(density) { 100.dp.toPx() }
@@ -172,7 +173,16 @@ fun SettingsScreen(
                 closeButtonOnRight = true,
                 titleFontSize = 18.sp,
                 themeType = themeType,
-                backgroundColor = if (themeType == ThemeType.FRESH) Color.White else null
+                backgroundColor = if (themeType == ThemeType.FRESH) Color.White else null,
+                shadowElevation = 6.dp
+            )
+
+            // 顶栏底部分割线：暗色主题下用浅色线增强区分度
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.5.dp)
+                    .background(colorScheme.onBackground.copy(alpha = if (isDarkTheme) 0.15f else 0.06f))
             )
 
             Column(

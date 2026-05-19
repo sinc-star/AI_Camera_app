@@ -277,7 +277,8 @@ fun TopBarWithActions(
     closeButtonOnRight: Boolean = false,
     titleFontSize: androidx.compose.ui.unit.TextUnit = 16.sp,
     themeType: ThemeType = ThemeType.PROFESSIONAL,
-    backgroundColor: androidx.compose.ui.graphics.Color? = null
+    backgroundColor: androidx.compose.ui.graphics.Color? = null,
+    shadowElevation: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val colorScheme = getColorScheme(themeType)
     val bgColor = backgroundColor ?: OverlayDark80
@@ -286,7 +287,8 @@ fun TopBarWithActions(
         modifier = modifier
             .fillMaxWidth()
             .height(56.dp),
-        color = bgColor
+        color = bgColor,
+        shadowElevation = shadowElevation
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // 标题（居中）
