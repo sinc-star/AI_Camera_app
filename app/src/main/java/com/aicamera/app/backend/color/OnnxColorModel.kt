@@ -197,20 +197,15 @@ object OnnxColorModel {
             val rawHighlight = floatArray.getOrElse(3) { 0.5f }
             val rawShadow = floatArray.getOrElse(4) { 0.5f }
             
-            // 参数范围限制 - 放宽限制，允许模型输出更广泛的参数
-            // exposure: 模型输出直接是调整值，范围 [-1.0, 1.0]
-            val exposure = rawExposure.coerceIn(-1.0f, 1.0f)
-            
-            // contrast: 模型输出是乘数，1.0 表示不调整，范围 [0.5, 2.0]
-            val contrast = rawContrast.coerceIn(0.5f, 2.0f)
-            
-            // saturation: 模型输出是乘数，1.0 表示不调整
-            // 范围 [0.5, 2.0]，允许更鲜艳或更柔和的效果
-            val saturation = rawSaturation.coerceIn(0.5f, 2.0f)
-            
-            // highlight/shadow: 模型输出是 0-1 的值，0.5 表示中性
-            val highlight = rawHighlight.coerceIn(0.0f, 1.0f)
-            val shadow = rawShadow.coerceIn(0.0f, 1.0f)
+            // 全局强度控制 — 去掉了HDR曲线(Reinhard/ACES)，可放宽到50%
+            // 曝光单独保守(35%)，因为曝光最影响观感
+            val INTENSITY = 0.5f
+            val EXPOSURE_INTENSITY = 0.35f
+            val exposure = (rawExposure * EXPOSURE_INTENSITY).coerceIn(-0.3f, 0.3f)
+            val contrast = (1.0f + (rawContrast - 1.0f) * INTENSITY).coerceIn(0.85f, 1.15f)
+            val saturation = (1.0f + (rawSaturation - 1.0f) * INTENSITY).coerceIn(0.85f, 1.15f)
+            val highlight = (0.5f + (rawHighlight - 0.5f) * INTENSITY).coerceIn(0.0f, 0.7f)
+            val shadow = (0.5f + (rawShadow - 0.5f) * INTENSITY).coerceIn(0.0f, 0.7f)
 
             Log.d(TAG, "========================================")
             Log.d(TAG, "MODEL OUTPUT (原始):")

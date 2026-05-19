@@ -1,6 +1,8 @@
 package com.aicamera.app.ui.screens
 
+import android.hardware.camera2.CaptureRequest
 import android.util.Log
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -84,6 +86,16 @@ fun CameraInitManager(
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .setJpegQuality(100)
                 .setTargetRotation(displayRotation)
+                .apply {
+                    Camera2Interop.Extender(this).setCaptureRequestOption(
+                        CaptureRequest.NOISE_REDUCTION_MODE,
+                        CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                    )
+                    Camera2Interop.Extender(this).setCaptureRequestOption(
+                        CaptureRequest.EDGE_MODE,
+                        CaptureRequest.EDGE_MODE_HIGH_QUALITY
+                    )
+                }
                 .build()
         }
         imageCaptureState.value = capture
@@ -188,21 +200,31 @@ private fun configureCameraParams(camera: Camera?, enableOis: Boolean = false) {
             androidx.camera.camera2.interop.Camera2CameraControl.from(currentCamera.cameraControl)
         val builder = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
             .setCaptureRequestOption(
-                android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
-                android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
+                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
             )
             .setCaptureRequestOption(
-                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
-                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            )
+            // 预览降噪 — FAST 模式在降噪和帧率间平衡
+            .setCaptureRequestOption(
+                CaptureRequest.NOISE_REDUCTION_MODE,
+                CaptureRequest.NOISE_REDUCTION_MODE_FAST
+            )
+            // 边缘增强 — 减少预览模糊
+            .setCaptureRequestOption(
+                CaptureRequest.EDGE_MODE,
+                CaptureRequest.EDGE_MODE_HIGH_QUALITY
             )
         if (enableOis) {
             builder.setCaptureRequestOption(
-                android.hardware.camera2.CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                android.hardware.camera2.CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON
             )
         }
         camera2Control.setCaptureRequestOptions(builder.build())
-        Log.d("CameraInit", "相机优化参数已配置")
+        Log.d("CameraInit", "相机优化参数已配置 (NR+Edge+AF+AE)")
     } catch (e: Throwable) {
         Log.e("CameraInit", "无法配置相机优化参数", e)
     }

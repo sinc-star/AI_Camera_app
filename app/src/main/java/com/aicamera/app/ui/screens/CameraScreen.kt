@@ -470,6 +470,7 @@ private fun CameraScreenContent(
         AndroidView(
             factory = {
                 previewView.apply {
+                    implementationMode = androidx.camera.view.PreviewView.ImplementationMode.PERFORMANCE
                     scaleType = toPreviewScaleType(CameraBackend.ManualSettings.previewAspectRatioPortrait)
                     // 前置摄像头时禁用镜像（让预览显示非镜像图像）
                     if (lensFacing == CameraSelector.LENS_FACING_FRONT) {

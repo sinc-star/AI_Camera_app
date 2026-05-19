@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.aicamera.app.backend.models.ColorAdjustmentParams
 import java.lang.Math.pow
-import kotlin.math.min
 
 
 /**
@@ -18,9 +17,8 @@ object ColorAdjustmentUtils {
 
     /**
      * 应用调色参数到图像
-     * 优化顺序：exposure -> contrast -> saturation -> highlight/shadow
-     * 先调整对比度再调整饱和度，确保色彩更鲜艳
-     * 每个步骤都独立捕获异常，确保即使某一步失败也能返回可用的结果
+     * 管线：曝光(简单EV+软钳位) → 对比度 → 饱和度(HSV) → 高光/阴影
+     * 注意：不包含 HDR→SDR 色调映射（Reinhard/ACES），那些会在零参数时无条件提亮中调
      */
     fun applyAdjustments(bitmap: Bitmap, params: ColorAdjustmentParams): Bitmap {
         // 打印输入参数，用于调试
@@ -41,20 +39,21 @@ object ColorAdjustmentUtils {
         var result = safeCopyBitmap(bitmap) ?: return bitmap
 
         try {
-            // 1. 应用曝光 (exposure)
-            // 曝光范围 [-1.0, 1.0]，允许更大幅度的调整
-            val clampedExposure = params.exposure.coerceIn(-1.0f, 1.0f)
-            // 总是应用曝光（即使为0，也确保通过）
-            Log.d(TAG, "Applying exposure: %.4f (alpha=%.4f)".format(clampedExposure, 1.0f + clampedExposure))
-            result = safeApplyExposure(result, clampedExposure) ?: result
+            // 1. 曝光 — 仅当有实际调整时才应用
+            val clampedExposure = params.exposure.coerceIn(-0.3f, 0.3f)
+            if (kotlin.math.abs(clampedExposure) >= 0.03f) {
+                Log.d(TAG, "Applying exposure: %.4f".format(clampedExposure))
+                result = safeApplyExposure(result, clampedExposure) ?: result
+            } else {
+                Log.d(TAG, "Skipping exposure (|%.4f| < 0.03)".format(clampedExposure))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply exposure", e)
         }
 
         try {
-            // 2. 应用对比度 (contrast) - 先调整对比度
-            // 对比度范围 [0.5, 2.0]，1.0 表示不调整
-            val clampedContrast = params.contrast.coerceIn(0.5f, 2.0f)
+            // 2. 应用对比度 (contrast)
+            val clampedContrast = params.contrast.coerceIn(0.85f, 1.15f)
             Log.d(TAG, "Applying contrast: %.4f".format(clampedContrast))
             result = safeApplyContrast(result, clampedContrast) ?: result
         } catch (e: Exception) {
@@ -62,10 +61,8 @@ object ColorAdjustmentUtils {
         }
 
         try {
-            // 3. 应用饱和度 (saturation) - 后调整饱和度，确保色彩鲜艳
-            // 饱和度范围 [0.5, 2.0]，1.0 表示不调整
-            // 关键：总是应用饱和度调整，确保色彩正确
-            val clampedSaturation = params.saturation.coerceIn(0.5f, 2.0f)
+            // 3. 应用饱和度 (saturation) — HSV空间 + Reinhard阻尼
+            val clampedSaturation = params.saturation.coerceIn(0.85f, 1.15f)
             Log.d(TAG, "Applying saturation: %.4f".format(clampedSaturation))
             result = safeApplySaturation(result, clampedSaturation) ?: result
         } catch (e: Exception) {
@@ -74,21 +71,13 @@ object ColorAdjustmentUtils {
 
         try {
             // 4. 应用高光/阴影 (highlight/shadow)
-            // 高光/阴影范围 [0.0, 1.0]，0.5 表示中性
-            val clampedHighlights = params.highlights.coerceIn(0.0f, 1.0f)
-            val clampedShadows = params.shadows.coerceIn(0.0f, 1.0f)
+            val clampedHighlights = params.highlights.coerceIn(0.0f, 0.7f)
+            val clampedShadows = params.shadows.coerceIn(0.0f, 0.7f)
             Log.d(TAG, "Applying highlight/shadow: h=%.4f, s=%.4f".format(clampedHighlights, clampedShadows))
             result = safeApplyHighlightShadow(result, clampedHighlights, clampedShadows) ?: result
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply highlight/shadow", e)
         }
-
-        // 移除双边滤波，避免模糊效果影响色彩鲜艳度
-        // try {
-        //     result = safeApplyBilateralFilter(result) ?: result
-        // } catch (e: Exception) {
-        //     Log.e(TAG, "Failed to apply bilateral filter", e)
-        // }
 
         return result
     }
@@ -106,13 +95,12 @@ object ColorAdjustmentUtils {
     }
 
     /**
-     * 应用曝光调整
-     * Python: adjusted_image = np.clip(adjusted_image * alpha, 0, 255)
-     * alpha = 1.0 + exposure
+     * 应用曝光调整 — 简单 EV 乘法 + 高光软钳位
+     * SDR 图像不需要 HDR→SDR 色调映射曲线
      */
     private fun safeApplyExposure(bitmap: Bitmap, exposure: Float): Bitmap? {
         return try {
-            val alpha = 1.0f + exposure
+            val exposureMult = Math.pow(2.0, exposure.toDouble()).toFloat()
             val width = bitmap.width
             val height = bitmap.height
             val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -123,10 +111,15 @@ object ColorAdjustmentUtils {
             for (i in pixels.indices) {
                 val pixel = pixels[i]
                 val a = (pixel shr 24) and 0xFF
-                val r = min(255f, ((pixel shr 16) and 0xFF) * alpha).toInt()
-                val g = min(255f, ((pixel shr 8) and 0xFF) * alpha).toInt()
-                val b = min(255f, (pixel and 0xFF) * alpha).toInt()
-                pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                val r = ((pixel shr 16) and 0xFF) / 255f * exposureMult
+                val g = ((pixel shr 8) and 0xFF) / 255f * exposureMult
+                val b = (pixel and 0xFF) / 255f * exposureMult
+
+                // 简单钳位，不做色调映射 — SDR 图像不需要
+                val newR = (r.coerceIn(0f, 1f) * 255f).toInt()
+                val newG = (g.coerceIn(0f, 1f) * 255f).toInt()
+                val newB = (b.coerceIn(0f, 1f) * 255f).toInt()
+                pixels[i] = (a shl 24) or (newR shl 16) or (newG shl 8) or newB
             }
 
             result.setPixels(pixels, 0, width, 0, 0, width, height)
@@ -138,9 +131,9 @@ object ColorAdjustmentUtils {
     }
 
     /**
-     * 应用饱和度调整
-     * Python: HSV 色彩空间调整 S 通道
-     * 重要：确保色彩鲜艳度，避免灰色
+     * 应用饱和度调整 — HSV 空间 + Reinhard 阻尼
+     * 在 HSV 空间调整 S 通道，已饱和颜色（S>0.6）增幅减半
+     * 参考 PhotonCamera 的 HSV Reinhard saturation
      */
     private fun safeApplySaturation(bitmap: Bitmap, saturation: Float): Bitmap? {
         return try {
@@ -158,16 +151,21 @@ object ColorAdjustmentUtils {
                 val g = ((pixel shr 8) and 0xFF)
                 val b = (pixel and 0xFF)
 
-                // 计算灰度值（用于饱和度调整）
-                val gray = (0.299f * r + 0.587f * g + 0.114f * b).toInt()
-                
-                // 应用饱和度：在灰色和原色之间插值
-                // saturation > 1 增加饱和度，saturation < 1 降低饱和度
-                val newR = (gray + (r - gray) * saturation).toInt().coerceIn(0, 255)
-                val newG = (gray + (g - gray) * saturation).toInt().coerceIn(0, 255)
-                val newB = (gray + (b - gray) * saturation).toInt().coerceIn(0, 255)
+                val hsv = rgbToHsv(r, g, b)
+                val h = hsv[0]
+                val s = hsv[1]
+                val v = hsv[2]
 
-                pixels[i] = (a shl 24) or (newR shl 16) or (newG shl 8) or newB
+                // 在 HSV 空间调整饱和度，Reinhard 阻尼：已饱和颜色增幅减小
+                val sNew = if (saturation > 1f) {
+                    val boost = (saturation - 1f) * (1f - s) // s越高 boost越小
+                    (s + boost).coerceIn(0f, 1f)
+                } else {
+                    (s * saturation).coerceIn(0f, 1f)
+                }
+
+                val rgb = hsvToRgb(h, sNew, v)
+                pixels[i] = (a shl 24) or (rgb[0] shl 16) or (rgb[1] shl 8) or rgb[2]
             }
 
             result.setPixels(pixels, 0, width, 0, 0, width, height)
@@ -247,9 +245,9 @@ object ColorAdjustmentUtils {
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
-            // 计算调整因子
-            val highlightAdjustment = 1.0f + highlight * 0.3f
-            val shadowAdjustment = 0.7f + shadow * 0.3f
+            // 计算调整因子 — reduce multipliers to 0.15
+            val highlightAdjustment = 1.0f + highlight * 0.15f
+            val shadowAdjustment = 0.85f + shadow * 0.15f
 
             for (i in pixels.indices) {
                 val pixel = pixels[i]
