@@ -77,11 +77,12 @@ object ColorBackend {
             val detectedInfo = top?.text ?: "通用场景"
 
             // Simple heuristics
+            // ML Kit 兜底参数 — 保守值，由 ONNX 管线的 clamp 做二次保护
             val (exposure, contrast, saturation) = when {
-                detectedInfo.contains("person", ignoreCase = true) -> Triple(0.15f, 0.12f, 0.10f)
-                detectedInfo.contains("food", ignoreCase = true) -> Triple(0.10f, 0.15f, 0.25f)
-                detectedInfo.contains("landscape", ignoreCase = true) -> Triple(0.05f, 0.20f, 0.15f)
-                else -> Triple(0.05f, 0.10f, 0.08f)
+                detectedInfo.contains("person") -> Triple(0.05f, 1.05f, 1.03f)
+                detectedInfo.contains("food") -> Triple(0.03f, 1.03f, 1.05f)
+                detectedInfo.contains("landscape") -> Triple(0.02f, 1.05f, 1.04f)
+                else -> Triple(0.02f, 1.02f, 1.02f)
             }
 
             AIEnhanceResult(
